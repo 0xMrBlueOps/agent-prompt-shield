@@ -291,11 +291,13 @@ Runnable examples live in `examples/`:
 - `generic_agent_wrapper.py`
 - `openai_tool_loop.py`
 - `langchain_style_wrapper.py`
+- `tool_call_gate_demo.py`
 
 Run one directly:
 
 ```powershell
 python examples/openai_tool_loop.py
+python examples/tool_call_gate_demo.py
 ```
 
 ## What It Detects
@@ -317,7 +319,8 @@ Rules are intentionally deterministic and inspectable. You can disable categorie
 
 The repository includes a local benchmark suite:
 
-- `benchmarks/attacks.json`: 40 realistic prompt-injection attacks
+- `benchmarks/attacks.json`: 40 synthetic prompt-injection attacks
+- `benchmarks/real_world_attacks.json`: 20 real-world-inspired attacks derived from public prompt-injection research patterns
 - `benchmarks/benign.json`: 100 benign queries across coding, translation/research, writing, general Q&A, and AI-security meta discussion
 - `benchmarks/run_benchmarks.py`: standard-library benchmark runner
 - `benchmarks/results.json`: latest measured output
@@ -332,34 +335,87 @@ Latest local calibration:
 
 ```text
 Current rule count: 22
-Attacks caught suspicious-or-blocked: 40/40 = 100.0%
-Attacks blocked-only: 38/40 = 95.0%
+Attacks caught suspicious-or-blocked: 60/60 = 100.0%
+Attacks blocked-only: 58/60 = 96.67%
 Benign false positives: 0/100 = 0.0%
+Naive baseline: 47/60 attacks detected = 78.33%
+Naive baseline benign false positives: 9/100 = 9.0%
+```
+
+Baseline comparison:
+
+```text
+Prompt Shield: 60/60 attacks caught, 58/60 blocked, 0/100 benign false positives
+Naive keyword/regex baseline: 47/60 attacks detected, 9/100 benign false positives
+```
+
+The naive baseline is deliberately simple: nine keyword/regex patterns for obvious phrases such as system prompt disclosure, encoded payloads, approval bypass, external destinations, and secret terms. It has no scoring, severities, rule categories, Unicode normalization, sanitization, tool-risk policy, or audit trail. It exists only to show that Prompt Shield is doing more than a shallow keyword scan.
+
+Corpus-level coverage:
+
+```text
+real_world_inspired: 20/20 caught, 20/20 blocked
+synthetic: 40/40 caught, 38/40 blocked
+naive baseline real_world_inspired: 17/20 detected
+naive baseline synthetic: 30/40 detected
 ```
 
 Per-category attack coverage:
 
 ```text
-code_smuggling: 3/3 caught, 3/3 blocked
-context_smuggling: 4/4 caught, 4/4 blocked
-encoded_payloads: 4/4 caught, 4/4 blocked
-indirect_injection: 5/5 caught, 4/5 blocked
-markdown_html_injection: 4/4 caught, 4/4 blocked
-multi_turn_setup: 4/4 caught, 3/4 blocked
+code_smuggling: 4/4 caught, 4/4 blocked
+context_smuggling: 5/5 caught, 5/5 blocked
+email_injection: 1/1 caught, 1/1 blocked
+encoded_payloads: 5/5 caught, 5/5 blocked
+indirect_injection: 8/8 caught, 7/8 blocked
+markdown_html_injection: 6/6 caught, 6/6 blocked
+multi_turn_setup: 5/5 caught, 4/5 blocked
 multilingual_override: 4/4 caught, 4/4 blocked
-persuasion_authority: 4/4 caught, 4/4 blocked
-system_prompt_extraction: 4/4 caught, 4/4 blocked
-translation_roleplay_jailbreak: 4/4 caught, 4/4 blocked
+persuasion_authority: 5/5 caught, 5/5 blocked
+secret_exfiltration: 1/1 caught, 1/1 blocked
+system_prompt_extraction: 6/6 caught, 6/6 blocked
+tool_hijack: 1/1 caught, 1/1 blocked
+tool_output_injection: 3/3 caught, 3/3 blocked
+translation_roleplay_jailbreak: 6/6 caught, 6/6 blocked
 ```
 
-Benchmark attacks include optional `inspired_by` provenance labels:
+The synthetic benchmark attacks include optional `inspired_by` provenance labels:
 
 - `owasp_llm01`
 - `greshake_indirect`
 - `liu_prompt_injection`
 - `common_jailbreak`
 
-These labels are calibration context, not claims of exact source reproduction.
+The real-world-inspired benchmark cases are rewritten regression tests derived from public source patterns:
+
+- OWASP LLM01 Prompt Injection: https://owasp.org/www-project-top-10-for-large-language-model-applications/
+- Greshake et al., indirect prompt injection: https://arxiv.org/abs/2302.12173
+- InjecAgent benchmark: https://arxiv.org/abs/2403.02691
+- Tensor Trust: https://tensortrust.ai/paper/
+
+These labels are calibration context, not claims of exact source reproduction. The derived cases are not a claim of full coverage against the original papers, benchmarks, or live-world attack distributions.
+
+Known benchmark limits:
+
+- The corpora are regression fixtures, not a representative sample of all prompt-injection traffic.
+- The real-world-inspired cases are rewritten from public attack patterns; they are not copied from the original benchmarks.
+- Deterministic rules can miss novel phrasing, subtle social engineering, and multi-step attacks that only become malicious across longer context.
+- A clean scan does not make a tool call safe. High-impact tools still need least privilege, approvals, sandboxing, credential isolation, and logging.
+
+## Failure and Bypass Notes
+
+Treat this as an alpha guardrail, not a complete security boundary.
+
+Known ways this can fail:
+
+- An attacker may phrase instructions in a way the deterministic rules do not recognize.
+- A long multi-message setup may look harmless one message at a time and only become malicious when combined.
+- A model can still mishandle cleanly labeled untrusted data after the scanner returns `safe`.
+- A safe scan does not prove a tool call is safe; the tool itself may be overprivileged or dangerous.
+- Allow lists and permissive policies can override useful protection if they are configured too broadly.
+- The benchmark is useful for regression tracking, but it is not a live adversarial evaluation.
+
+The intended posture is simple: scan and label untrusted content, gate tool calls, keep high-impact tools least-privileged, require human approval for irreversible actions, and log what happened.
 
 ## Attack Corpus
 

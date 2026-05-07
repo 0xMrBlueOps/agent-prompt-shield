@@ -1,0 +1,4 @@
+include LAUNCH.md
+include RELEASE.md
+recursive-include benchmarks *.json *.py
+recursive-include examples *.py

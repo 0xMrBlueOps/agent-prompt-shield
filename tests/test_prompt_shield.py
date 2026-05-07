@@ -535,12 +535,16 @@ class PromptShieldTests(unittest.TestCase):
     def test_phase_8_examples_run_as_smoke_tests(self):
         examples_dir = Path("examples")
         expected_fragments = {
-            "generic_agent_wrapper.py": "Blocked notes.search",
-            "langchain_style_wrapper.py": "Blocked email.send",
-            "openai_tool_loop.py": "Austin: 72F",
+            "generic_agent_wrapper.py": ("Blocked notes.search",),
+            "langchain_style_wrapper.py": ("Blocked email.send",),
+            "openai_tool_loop.py": ("Austin: 72F",),
+            "tool_call_gate_demo.py": (
+                "read-only lookup: ALLOWED",
+                "risky shell: BLOCKED",
+            ),
         }
 
-        for example_name, expected in expected_fragments.items():
+        for example_name, expected_items in expected_fragments.items():
             with self.subTest(example=example_name):
                 env = os.environ.copy()
                 env["PYTHONPATH"] = str(Path.cwd())
@@ -553,7 +557,8 @@ class PromptShieldTests(unittest.TestCase):
                 )
 
                 self.assertEqual(completed.returncode, 0, completed.stderr)
-                self.assertIn(expected, completed.stdout)
+                for expected in expected_items:
+                    self.assertIn(expected, completed.stdout)
 
 
 if __name__ == "__main__":

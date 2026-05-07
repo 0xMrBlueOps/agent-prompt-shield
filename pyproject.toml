@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-prompt-shield"
 version = "0.1.0"
-description = "Deterministic prompt-injection firewall for tool-using agents."
+description = "Deterministic prompt-injection guardrail for tool-using agents."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Agent Prompt Shield Contributors" }]
-keywords = ["agent", "security", "prompt-injection", "llm", "firewall"]
+keywords = ["agent", "security", "prompt-injection", "llm", "guardrail"]
 dependencies = []
 classifiers = [
   "Development Status :: 3 - Alpha",
