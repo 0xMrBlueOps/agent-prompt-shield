@@ -2,8 +2,8 @@
 
 Lightweight security research report for `agent-prompt-shield`.
 
-Version: `v0.1.x` research-grade alpha  
-Repository scope: deterministic prompt-injection scanning, context sanitization, tool-call gating, policy-as-code, audit logging, and reproducible local benchmarks  
+Version: `v0.1.x` research-grade alpha
+Repository scope: deterministic prompt-injection scanning, context sanitization, tool-call gating, policy-as-code, audit logging, and reproducible local benchmarks
 Status: engineering and evaluation artifact, not a production security guarantee
 
 ## Abstract
@@ -261,4 +261,3 @@ It should not be described as:
 - model alignment
 - a sandbox
 - a replacement for least privilege, approval gates, retrieval access control, or runtime monitoring
-
