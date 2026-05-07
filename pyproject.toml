@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-prompt-shield"
+version = "0.1.0"
+description = "Deterministic prompt-injection firewall for tool-using agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Agent Prompt Shield Contributors" }]
+keywords = ["agent", "security", "prompt-injection", "llm", "firewall"]
+dependencies = []
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Security",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+
+[project.scripts]
+agent-prompt-shield = "agent_prompt_shield.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agent_prompt_shield*"]
+
+[tool.setuptools.package-data]
+agent_prompt_shield = ["py.typed"]
