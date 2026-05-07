@@ -8,7 +8,6 @@ from .models import EnforcementResult, ScanResult, ToolRequest
 from .scanner import PromptShield
 from .tool_gate import ToolGatekeeper, ToolPolicy
 
-
 T = TypeVar("T")
 
 
@@ -39,11 +38,12 @@ class ToolEnforcer:
         tool_name: str,
         tool_args: dict[str, Any] | None = None,
         risk: str | None = None,
+        context: str | None = None,
     ) -> EnforcementResult:
         scan = self.shield.scan(untrusted_text)
         return self.enforce_scan(
             scan,
-            ToolRequest(name=tool_name, args=tool_args or {}, risk=risk),
+            ToolRequest(name=tool_name, args=tool_args or {}, risk=risk, context=context),
         )
 
     def enforce_scan(self, scan: ScanResult, request: ToolRequest) -> EnforcementResult:
@@ -65,12 +65,14 @@ class ToolEnforcer:
         tool_name: str,
         tool_args: dict[str, Any] | None = None,
         risk: str | None = None,
+        context: str | None = None,
     ) -> tuple[EnforcementResult, T | None]:
         result = self.enforce_text(
             untrusted_text=untrusted_text,
             tool_name=tool_name,
             tool_args=tool_args,
             risk=risk,
+            context=context,
         )
         if not result.allowed:
             return result, None

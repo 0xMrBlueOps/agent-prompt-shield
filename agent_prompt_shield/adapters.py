@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from .context import ShieldedContext
 from .models import EnforcementResult
 from .scanner import PromptShield
 from .tool_gate import ToolGatekeeper
-
 
 T = TypeVar("T")
 
@@ -77,7 +76,7 @@ class AgentGuard:
         risk: str | None = None,
     ) -> ToolExecution:
         args = tool_args or {}
-        name = tool_name or getattr(tool, "__name__", "tool")
+        name = cast(str, tool_name or getattr(tool, "__name__", "tool"))
         result = self.check_tool(name, tool_args=args, risk=risk)
         if not result.allowed:
             if self.raise_on_block:
@@ -103,7 +102,7 @@ class AgentGuard:
             )
             if not execution.allowed:
                 raise ToolBlockedError(execution.result)
-            return execution.output
+            return cast(T, execution.output)
 
         return guarded_tool
 

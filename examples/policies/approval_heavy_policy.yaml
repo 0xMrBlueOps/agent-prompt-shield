@@ -1,0 +1,31 @@
+name: approval-heavy-agent-policy
+base_profile: balanced
+
+tool_risk_levels:
+  memory.write: medium
+  database.write: high
+  payment: critical
+  slack.post: critical
+
+allow_tools:
+  - docs.search
+  - memory.read
+
+deny_tools:
+  - payment.refund
+  - database.drop
+
+require_approval_tools:
+  - memory.write
+  - database.write
+  - slack.post
+
+blocked_contexts:
+  - ticket_attachment
+  - external_email
+
+audit_reasons:
+  context.blocked: External context cannot directly authorize tool execution.
+  tool.deny: Business-critical tool is denied by default policy.
+  tool.approval: Mutating tool call needs human approval and audit evidence.
+  risk.approval_when_safe: Critical tools require approval even when content scans safe.

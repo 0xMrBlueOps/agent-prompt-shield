@@ -16,5 +16,7 @@ dist/
 .mypy_cache/
 .ruff_cache/
 
+examples/*_audit.jsonl
+
 .DS_Store
 Thumbs.db

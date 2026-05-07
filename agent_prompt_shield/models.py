@@ -76,6 +76,7 @@ class ToolRequest:
     name: str
     args: dict[str, Any] = field(default_factory=dict)
     risk: str | None = None
+    context: str | None = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +89,7 @@ class GateDecision:
     required_approval: bool = False
     profile: str = "balanced"
     matched_rule: str | None = None
+    audit_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -99,6 +101,7 @@ class GateDecision:
             "required_approval": self.required_approval,
             "profile": self.profile,
             "matched_rule": self.matched_rule,
+            "audit_reason": self.audit_reason,
         }
 
 

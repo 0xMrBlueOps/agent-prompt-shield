@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .models import GateDecision, ScanResult, ToolRequest, ToolRisk, Verdict
-
 
 RISK_ORDER = {
     ToolRisk.LOW: 0,
@@ -71,6 +70,9 @@ class ToolPolicy:
         "text",
         "url",
     )
+    tool_risk_levels: dict[str, ToolRisk] = field(default_factory=dict)
+    blocked_contexts: tuple[str, ...] = ()
+    audit_reasons: dict[str, str] = field(default_factory=dict)
 
 
 POLICY_PROFILES: dict[str, ToolPolicy] = {
@@ -101,7 +103,24 @@ class ToolGatekeeper:
         tool_name = request.name.lower()
         risk = self.classify(request)
 
+        if request.context and self._matches(request.context.lower(), self.policy.blocked_contexts):
+            matched_rule = "context.blocked"
+            return GateDecision(
+                allowed=False,
+                reason=(
+                    f"Blocked {request.name} because context '{request.context}' "
+                    "matches the policy blocked-context list."
+                ),
+                tool_name=request.name,
+                scan_verdict=scan_result.verdict,
+                risk=risk,
+                profile=self.policy.name,
+                matched_rule=matched_rule,
+                audit_reason=self._audit_reason(matched_rule),
+            )
+
         if self._matches(tool_name, self.policy.deny_tools):
+            matched_rule = "tool.deny"
             return GateDecision(
                 allowed=False,
                 reason=f"Blocked {request.name} because it matches the policy deny list.",
@@ -109,10 +128,12 @@ class ToolGatekeeper:
                 scan_verdict=scan_result.verdict,
                 risk=risk,
                 profile=self.policy.name,
-                matched_rule="tool.deny",
+                matched_rule=matched_rule,
+                audit_reason=self._audit_reason(matched_rule),
             )
 
         if scan_result.verdict == self.policy.block_on_verdict:
+            matched_rule = "verdict.blocked"
             return GateDecision(
                 allowed=False,
                 reason=f"Blocked {request.name} because the context verdict is {scan_result.verdict.value}.",
@@ -120,10 +141,12 @@ class ToolGatekeeper:
                 scan_verdict=scan_result.verdict,
                 risk=risk,
                 profile=self.policy.name,
-                matched_rule="verdict.blocked",
+                matched_rule=matched_rule,
+                audit_reason=self._audit_reason(matched_rule),
             )
 
         if self._matches(tool_name, self.policy.allow_tools):
+            matched_rule = "tool.allow"
             return GateDecision(
                 allowed=True,
                 reason=f"Allowed {request.name} because it matches the policy allow list.",
@@ -131,10 +154,12 @@ class ToolGatekeeper:
                 scan_verdict=scan_result.verdict,
                 risk=risk,
                 profile=self.policy.name,
-                matched_rule="tool.allow",
+                matched_rule=matched_rule,
+                audit_reason=self._audit_reason(matched_rule),
             )
 
         if self._matches(tool_name, self.policy.require_approval_tools):
+            matched_rule = "tool.approval"
             return GateDecision(
                 allowed=False,
                 reason=f"{request.name} requires approval because it matches the policy approval list.",
@@ -143,11 +168,13 @@ class ToolGatekeeper:
                 risk=risk,
                 required_approval=True,
                 profile=self.policy.name,
-                matched_rule="tool.approval",
+                matched_rule=matched_rule,
+                audit_reason=self._audit_reason(matched_rule),
             )
 
         if scan_result.verdict == Verdict.SUSPICIOUS:
             if self._risk_at_least(risk, self.policy.block_risk_at_suspicious):
+                matched_rule = "risk.block_when_suspicious"
                 return GateDecision(
                     allowed=False,
                     reason=(
@@ -157,9 +184,11 @@ class ToolGatekeeper:
                     scan_verdict=scan_result.verdict,
                     risk=risk,
                     profile=self.policy.name,
-                    matched_rule="risk.block_when_suspicious",
+                    matched_rule=matched_rule,
+                    audit_reason=self._audit_reason(matched_rule),
                 )
             if self._risk_at_least(risk, self.policy.approval_risk_at_suspicious):
+                matched_rule = "risk.approval_when_suspicious"
                 return GateDecision(
                     allowed=False,
                     reason=(
@@ -170,7 +199,8 @@ class ToolGatekeeper:
                     risk=risk,
                     required_approval=True,
                     profile=self.policy.name,
-                    matched_rule="risk.approval_when_suspicious",
+                    matched_rule=matched_rule,
+                    audit_reason=self._audit_reason(matched_rule),
                 )
 
         if (
@@ -178,6 +208,7 @@ class ToolGatekeeper:
             and self.policy.approval_risk_at_safe is not None
             and self._risk_at_least(risk, self.policy.approval_risk_at_safe)
         ):
+            matched_rule = "risk.approval_when_safe"
             return GateDecision(
                 allowed=False,
                 reason=f"{request.name} requires approval because it is {risk.value} risk.",
@@ -186,7 +217,8 @@ class ToolGatekeeper:
                 risk=risk,
                 required_approval=True,
                 profile=self.policy.name,
-                matched_rule="risk.approval_when_safe",
+                matched_rule=matched_rule,
+                audit_reason=self._audit_reason(matched_rule),
             )
 
         return GateDecision(
@@ -206,6 +238,9 @@ class ToolGatekeeper:
                 pass
 
         tool_name = request.name.lower()
+        for tool_match, risk in self.policy.tool_risk_levels.items():
+            if tool_match.lower() in tool_name:
+                return risk
         if self._matches(tool_name, self.policy.critical_tools):
             return ToolRisk.CRITICAL
         if self._matches(tool_name, self.policy.high_risk_tools):
@@ -227,6 +262,9 @@ class ToolGatekeeper:
     def _has_write_like_args(self, args: dict[str, Any]) -> bool:
         lowered_names = {name.lower() for name in args}
         return bool(lowered_names.intersection(self.policy.write_arg_names))
+
+    def _audit_reason(self, matched_rule: str) -> str | None:
+        return self.policy.audit_reasons.get(matched_rule)
 
 
 def get_policy_profile(name: str) -> ToolPolicy:
@@ -259,4 +297,7 @@ def customize_policy(
         high_risk_tools=base.high_risk_tools,
         medium_risk_tools=base.medium_risk_tools,
         write_arg_names=base.write_arg_names,
+        tool_risk_levels=dict(base.tool_risk_levels),
+        blocked_contexts=base.blocked_contexts,
+        audit_reasons=dict(base.audit_reasons),
     )

@@ -325,6 +325,7 @@ The repository includes a local benchmark suite:
 - `benchmarks/benign.json`: 100 benign queries across coding, translation/research, writing, general Q&A, and AI-security meta discussion
 - `benchmarks/run_benchmarks.py`: standard-library benchmark runner
 - `benchmarks/results.json`: latest measured output
+- `datasets/*.jsonl`: larger category-specific JSONL corpora for direct injection, indirect injection, hidden Markdown/HTML injection, obfuscation, tool exfiltration, memory poisoning, RAG poisoning, and benign controls
 
 Run it:
 
@@ -420,7 +421,7 @@ Known ways this can fail:
 - The adversarial bypass corpus intentionally includes known limitations; it is not included in the headline attack score.
 - The adversarial corpus currently includes one false-positive pressure case where defensive security writing is blocked too aggressively.
 
-See `EVAL.md` for the threat model, methodology, current calibration, known bypasses, and research next steps.
+See `SECURITY_MODEL.md` for the formal assets, trust boundaries, attacker model, OWASP LLM Top 10 2025 mapping, and residual risk register. See `LIMITATIONS.md` for explicit non-guarantees around false negatives, false positives, semantic attacks, encoded attacks, multimodal attacks, memory poisoning, RAG poisoning, and required companion controls. See `EVAL.md` for methodology, current calibration, known bypasses, and research next steps.
 
 The intended posture is simple: scan and label untrusted content, gate tool calls, keep high-impact tools least-privileged, require human approval for irreversible actions, and log what happened.
 
@@ -495,6 +496,10 @@ See `RELEASE.md` for the release checklist.
 ## Security Model
 
 Agent Prompt Shield is designed to reduce prompt-injection risk, not to prove an agent safe.
+
+The formal security model is maintained in `SECURITY_MODEL.md`. It defines protected assets, trust boundaries, attacker capabilities, attacker goals, non-goals, assumptions, residual risks, and OWASP LLM Top 10 2025 mappings.
+
+The explicit non-guarantees are maintained in `LIMITATIONS.md`. It explains why false negatives, false positives, semantic attacks, encoded attacks, multimodal attacks, memory poisoning, and RAG poisoning remain possible, and why this library must be paired with sandboxing, least privilege, human approval, and audit logging.
 
 It helps with:
 

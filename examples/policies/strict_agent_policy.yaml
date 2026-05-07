@@ -1,0 +1,34 @@
+name: strict-agent-policy
+base_profile: strict
+
+tool_risk_levels:
+  shell: critical
+  filesystem: high
+  browser: high
+  email: critical
+  notes.search: low
+
+allow_tools:
+  - notes.search
+  - docs.lookup
+
+deny_tools:
+  - shell.run
+  - secrets.read
+
+require_approval_tools:
+  - email.send
+  - github.create_release
+  - browser.open
+
+blocked_contexts:
+  - untrusted_web
+  - retrieved_document
+  - user_upload
+
+audit_reasons:
+  context.blocked: Tool execution from this untrusted context requires a separate trusted decision.
+  tool.deny: Tool is explicitly denied by policy-as-code.
+  tool.approval: Tool requires human approval before execution.
+  risk.block_when_suspicious: Suspicious context cannot trigger high-risk or critical tools.
+  verdict.blocked: Prompt Shield classified the surrounding context as blocked.

@@ -7,8 +7,10 @@ import sys
 from .audit import AuditLog
 from .context import ShieldedContext
 from .models import EnforcementResult, ToolRequest
+from .mutation import mutate_prompt
+from .policy import load_policy_file
 from .scanner import PromptShield, ScannerConfig
-from .tool_gate import POLICY_PROFILES, ToolGatekeeper, customize_policy
+from .tool_gate import POLICY_PROFILES, ToolGatekeeper, ToolPolicy, customize_policy
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -55,6 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--allow-tool", action="append", default=[], help="Allow tools matching this substring.")
     scan.add_argument("--deny-tool", action="append", default=[], help="Block tools matching this substring.")
     scan.add_argument("--approval-tool", action="append", default=[], help="Require approval for tools matching this substring.")
+    scan.add_argument("--policy-file", help="YAML policy-as-code file to use for tool gating.")
+    scan.add_argument("--context-name", help="Context/source name used for blocked-context policy checks.")
 
     context = subparsers.add_parser("context", help="Build and score mixed-trust prompt context.")
     context.add_argument(
@@ -96,6 +100,13 @@ def build_parser() -> argparse.ArgumentParser:
     context.add_argument("--allow-tool", action="append", default=[], help="Allow tools matching this substring.")
     context.add_argument("--deny-tool", action="append", default=[], help="Block tools matching this substring.")
     context.add_argument("--approval-tool", action="append", default=[], help="Require approval for tools matching this substring.")
+    context.add_argument("--policy-file", help="YAML policy-as-code file to use for tool gating.")
+    context.add_argument("--context-name", help="Context/source name used for blocked-context policy checks.")
+
+    mutate = subparsers.add_parser("mutate", help="Generate adversarial prompt mutations.")
+    mutate.add_argument("--input", required=True, help="Prompt-injection string to mutate.")
+    mutate.add_argument("--count", type=int, default=20, help="Number of mutations to emit.")
+    mutate.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     return parser
 
 
@@ -106,12 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "scan":
         text = args.text if args.text is not None else sys.stdin.read()
         scanner_config = _scanner_config_from_args(args, parser)
-        policy = customize_policy(
-            args.policy,
-            allow_tools=tuple(args.allow_tool),
-            deny_tools=tuple(args.deny_tool),
-            require_approval_tools=tuple(args.approval_tool),
-        )
+        policy = _tool_policy_from_args(args, parser)
         shield = PromptShield(
             config=scanner_config,
             tool_gatekeeper=ToolGatekeeper(policy),
@@ -121,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         if audit_log:
             audit_log.record_scan(result, source="cli.scan")
         payload = result.to_dict()
+        tool_blocked = False
         if args.tool:
             try:
                 tool_args = json.loads(args.tool_args_json)
@@ -129,9 +136,15 @@ def main(argv: list[str] | None = None) -> int:
             if not isinstance(tool_args, dict):
                 parser.error("--tool-args-json must decode to a JSON object.")
             decision = shield.gate_tool(
-                ToolRequest(name=args.tool, args=tool_args, risk=args.risk),
+                ToolRequest(
+                    name=args.tool,
+                    args=tool_args,
+                    risk=args.risk,
+                    context=args.context_name,
+                ),
                 result,
             )
+            tool_blocked = not decision.allowed
             payload["tool_decision"] = decision.to_dict()
             if audit_log:
                 audit_log.record_enforcement(
@@ -149,16 +162,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.tool:
                 decision = payload["tool_decision"]
                 print(f"tool={decision['tool_name']} allowed={decision['allowed']} reason={decision['reason']}")
-        return 2 if result.blocked else 1 if result.suspicious else 0
+        return 2 if result.blocked or tool_blocked else 1 if result.suspicious else 0
 
     if args.command == "context":
         scanner_config = _scanner_config_from_args(args, parser)
-        policy = customize_policy(
-            args.policy,
-            allow_tools=tuple(args.allow_tool),
-            deny_tools=tuple(args.deny_tool),
-            require_approval_tools=tuple(args.approval_tool),
-        )
+        policy = _tool_policy_from_args(args, parser)
         context = ShieldedContext(
             PromptShield(config=scanner_config, tool_gatekeeper=ToolGatekeeper(policy)),
             audit_log=args.audit_log,
@@ -173,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
         report = context.report()
         payload = report.to_dict()
         payload["prompt_context"] = context.build_prompt_context()
+        tool_blocked = False
         if args.tool:
             try:
                 tool_args = json.loads(args.tool_args_json)
@@ -180,11 +189,14 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error(f"--tool-args-json must be valid JSON: {exc}")
             if not isinstance(tool_args, dict):
                 parser.error("--tool-args-json must decode to a JSON object.")
-            payload["tool_decision"] = context.enforce_tool(
+            enforcement = context.enforce_tool(
                 tool_name=args.tool,
                 tool_args=tool_args,
                 risk=args.risk,
-            ).decision.to_dict()
+                context=args.context_name,
+            )
+            tool_blocked = not enforcement.allowed
+            payload["tool_decision"] = enforcement.decision.to_dict()
 
         if args.json:
             print(json.dumps(payload, indent=2))
@@ -194,10 +206,30 @@ def main(argv: list[str] | None = None) -> int:
             if args.tool:
                 decision = payload["tool_decision"]
                 print(f"tool={decision['tool_name']} allowed={decision['allowed']} reason={decision['reason']}")
-        return 2 if report.blocked else 1 if report.suspicious else 0
+        return 2 if report.blocked or tool_blocked else 1 if report.suspicious else 0
+
+    if args.command == "mutate":
+        if args.count < 0:
+            parser.error("--count must be a non-negative integer.")
+        mutations = mutate_prompt(args.input, count=args.count)
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "input": args.input,
+                        "count": len(mutations),
+                        "mutations": mutations,
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            for mutation in mutations:
+                line = mutation.replace("\r", "\\r").replace("\n", "\\n")
+                print(line.encode("unicode_escape").decode("ascii"))
+        return 0
 
     parser.error(f"Unknown command: {args.command}")
-    return 2
 
 
 def _split_context_entry(raw_entry: str) -> tuple[str, str]:
@@ -222,6 +254,28 @@ def _scanner_config_from_args(args: argparse.Namespace, parser: argparse.Argumen
         blocked_categories=tuple(args.block_category),
         rule_severity_overrides=_parse_severity_overrides(args.rule_severity, parser),
         category_severity_overrides=_parse_severity_overrides(args.category_severity, parser),
+    )
+
+
+def _tool_policy_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> ToolPolicy:
+    if args.policy_file:
+        try:
+            policy = load_policy_file(args.policy_file)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if args.allow_tool or args.deny_tool or args.approval_tool:
+            policy = customize_policy(
+                policy,
+                allow_tools=tuple(args.allow_tool),
+                deny_tools=tuple(args.deny_tool),
+                require_approval_tools=tuple(args.approval_tool),
+            )
+        return policy
+    return customize_policy(
+        args.policy,
+        allow_tools=tuple(args.allow_tool),
+        deny_tools=tuple(args.deny_tool),
+        require_approval_tools=tuple(args.approval_tool),
     )
 
 

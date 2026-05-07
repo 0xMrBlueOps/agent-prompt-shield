@@ -123,9 +123,10 @@ class ShieldedContext:
         tool_name: str,
         tool_args: dict[str, Any] | None = None,
         risk: str | None = None,
+        context: str | None = None,
     ) -> EnforcementResult:
         synthetic_scan = self._combined_scan()
-        request = ToolRequest(name=tool_name, args=tool_args or {}, risk=risk)
+        request = ToolRequest(name=tool_name, args=tool_args or {}, risk=risk, context=context)
         decision = self.shield.gate_tool(request, synthetic_scan)
         result = EnforcementResult(scan=synthetic_scan, decision=decision)
         if self.audit_log:

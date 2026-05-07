@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Iterable
 
 from .models import Finding, GateDecision, ScanResult, ToolRequest, Verdict
 from .rules import DEFAULT_RULES, Rule

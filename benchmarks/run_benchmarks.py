@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
-import argparse
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -14,7 +14,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from agent_prompt_shield import PromptShield, Verdict
 from agent_prompt_shield.rules import DEFAULT_RULES
-
 
 ATTACKS_PATH = ROOT / "attacks.json"
 REAL_WORLD_ATTACKS_PATH = ROOT / "real_world_attacks.json"
