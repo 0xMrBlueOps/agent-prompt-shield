@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import argparse
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from agent_prompt_shield.rules import DEFAULT_RULES
 
 ATTACKS_PATH = ROOT / "attacks.json"
 REAL_WORLD_ATTACKS_PATH = ROOT / "real_world_attacks.json"
+ADVERSARIAL_BYPASS_PATH = ROOT / "adversarial_bypass.json"
 BENIGN_PATH = ROOT / "benign.json"
 RESULTS_PATH = ROOT / "results.json"
 
@@ -133,9 +135,94 @@ def summarize_naive_baseline(
     }
 
 
+def summarize_adversarial_bypass(
+    shield: PromptShield,
+    cases: list[dict[str, Any]],
+) -> dict[str, Any]:
+    results = []
+    caught_count = 0
+    blocked_count = 0
+    expected_alignment_count = 0
+    limitation_count = 0
+
+    for item in cases:
+        result = shield.scan(item["text"])
+        caught = result.verdict in {Verdict.SUSPICIOUS, Verdict.BLOCKED}
+        blocked = result.verdict == Verdict.BLOCKED
+        expected = item["expected_verdict"]
+        aligns = result.verdict.value == expected
+        if caught:
+            caught_count += 1
+        if blocked:
+            blocked_count += 1
+        if aligns:
+            expected_alignment_count += 1
+        if item.get("intended_use") == "known_limitation":
+            limitation_count += 1
+        results.append(
+            {
+                "id": item["id"],
+                "category": item["category"],
+                "intended_use": item.get("intended_use"),
+                "expected_verdict": expected,
+                "actual_verdict": result.verdict.value,
+                "score": result.score,
+                "caught": caught,
+                "blocked": blocked,
+                "expected_alignment": aligns,
+                "attack_goal": item.get("attack_goal"),
+                "notes": item.get("notes"),
+                "findings": finding_summary(result),
+            }
+        )
+
+    return {
+        "description": "Adversarial bypass and failure-analysis corpus. This suite is reported separately from headline benchmark numbers so known limitations are visible instead of hidden.",
+        "total": len(cases),
+        "known_limitations": limitation_count,
+        "caught": caught_count,
+        "caught_rate": pct(caught_count, len(cases)),
+        "blocked": blocked_count,
+        "blocked_rate": pct(blocked_count, len(cases)),
+        "expected_alignment": expected_alignment_count,
+        "expected_alignment_rate": pct(expected_alignment_count, len(cases)),
+        "cases": results,
+    }
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run Agent Prompt Shield benchmarks.")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Fail if calibrated headline benchmark thresholds regress.",
+    )
+    parser.add_argument(
+        "--min-attack-caught-rate",
+        type=float,
+        default=100.0,
+        help="Minimum suspicious-or-blocked attack catch rate for --check.",
+    )
+    parser.add_argument(
+        "--min-attack-blocked-rate",
+        type=float,
+        default=95.0,
+        help="Minimum blocked-only attack rate for --check.",
+    )
+    parser.add_argument(
+        "--max-benign-false-positive-rate",
+        type=float,
+        default=1.0,
+        help="Maximum benign false-positive rate for --check.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     synthetic_attacks = load_json(ATTACKS_PATH)["attacks"]
     real_world_attacks = load_json(REAL_WORLD_ATTACKS_PATH)["attacks"]
+    adversarial_bypass = load_json(ADVERSARIAL_BYPASS_PATH)["cases"]
     attack_sets = (
         ("synthetic", synthetic_attacks),
         ("real_world_inspired", real_world_attacks),
@@ -301,6 +388,7 @@ def main() -> None:
         "missed_attacks": missed_attacks,
         "false_positives": false_positives,
         "naive_baseline": summarize_naive_baseline(attacks, benign),
+        "adversarial_bypass": summarize_adversarial_bypass(shield, adversarial_bypass),
     }
 
     output = {
@@ -324,6 +412,7 @@ def main() -> None:
         f"({summary['false_positive_rate']}%)"
     )
     baseline = summary["naive_baseline"]
+    adversarial = summary["adversarial_bypass"]
     print(
         "Naive baseline: "
         f"{baseline['attacks_detected']}/{baseline['attacks_total']} attacks detected "
@@ -358,7 +447,40 @@ def main() -> None:
             f"{stats['blocked']}/{stats['total']} blocked "
             f"({stats['blocked_rate']}%)"
         )
+    print(
+        "Adversarial bypass suite: "
+        f"{adversarial['caught']}/{adversarial['total']} caught "
+        f"({adversarial['caught_rate']}%), "
+        f"{adversarial['blocked']}/{adversarial['total']} blocked "
+        f"({adversarial['blocked_rate']}%), "
+        f"{adversarial['expected_alignment']}/{adversarial['total']} expected outcomes "
+        f"({adversarial['expected_alignment_rate']}%)"
+    )
     print(f"Results saved to: {RESULTS_PATH}")
+
+    if args.check:
+        failures = []
+        if summary["true_positive_rate"] < args.min_attack_caught_rate:
+            failures.append(
+                "attack catch rate "
+                f"{summary['true_positive_rate']}% < {args.min_attack_caught_rate}%"
+            )
+        if summary["blocked_only_rate"] < args.min_attack_blocked_rate:
+            failures.append(
+                "attack blocked rate "
+                f"{summary['blocked_only_rate']}% < {args.min_attack_blocked_rate}%"
+            )
+        if summary["false_positive_rate"] > args.max_benign_false_positive_rate:
+            failures.append(
+                "benign false-positive rate "
+                f"{summary['false_positive_rate']}% > {args.max_benign_false_positive_rate}%"
+            )
+        if failures:
+            print("Benchmark check failed:")
+            for failure in failures:
+                print(f"  - {failure}")
+            raise SystemExit(1)
+        print("Benchmark check passed.")
 
 
 if __name__ == "__main__":

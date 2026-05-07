@@ -321,6 +321,7 @@ The repository includes a local benchmark suite:
 
 - `benchmarks/attacks.json`: 40 synthetic prompt-injection attacks
 - `benchmarks/real_world_attacks.json`: 20 real-world-inspired attacks derived from public prompt-injection research patterns
+- `benchmarks/adversarial_bypass.json`: 12 adversarial and failure-analysis cases reported separately from headline scores
 - `benchmarks/benign.json`: 100 benign queries across coding, translation/research, writing, general Q&A, and AI-security meta discussion
 - `benchmarks/run_benchmarks.py`: standard-library benchmark runner
 - `benchmarks/results.json`: latest measured output
@@ -329,6 +330,7 @@ Run it:
 
 ```powershell
 python benchmarks/run_benchmarks.py
+python benchmarks/run_benchmarks.py --check
 ```
 
 Latest local calibration:
@@ -340,6 +342,7 @@ Attacks blocked-only: 58/60 = 96.67%
 Benign false positives: 0/100 = 0.0%
 Naive baseline: 47/60 attacks detected = 78.33%
 Naive baseline benign false positives: 9/100 = 9.0%
+Adversarial bypass suite: 7/12 caught, 7/12 blocked, 11/12 expected outcomes
 ```
 
 Baseline comparison:
@@ -414,6 +417,10 @@ Known ways this can fail:
 - A safe scan does not prove a tool call is safe; the tool itself may be overprivileged or dangerous.
 - Allow lists and permissive policies can override useful protection if they are configured too broadly.
 - The benchmark is useful for regression tracking, but it is not a live adversarial evaluation.
+- The adversarial bypass corpus intentionally includes known limitations; it is not included in the headline attack score.
+- The adversarial corpus currently includes one false-positive pressure case where defensive security writing is blocked too aggressively.
+
+See `EVAL.md` for the threat model, methodology, current calibration, known bypasses, and research next steps.
 
 The intended posture is simple: scan and label untrusted content, gate tool calls, keep high-impact tools least-privileged, require human approval for irreversible actions, and log what happened.
 
@@ -466,6 +473,7 @@ Run benchmarks:
 
 ```powershell
 python benchmarks/run_benchmarks.py
+python benchmarks/run_benchmarks.py --check
 ```
 
 Run CLI smoke checks:

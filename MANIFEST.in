@@ -1,4 +1,6 @@
 include LAUNCH.md
 include RELEASE.md
+include EVAL.md
 recursive-include benchmarks *.json *.py
 recursive-include examples *.py
+recursive-include scripts *.ps1
