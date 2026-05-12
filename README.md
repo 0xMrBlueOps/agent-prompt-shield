@@ -292,13 +292,32 @@ Runnable examples live in `examples/`:
 - `openai_tool_loop.py`
 - `langchain_style_wrapper.py`
 - `tool_call_gate_demo.py`
+- `mcp_tool_output_gate_demo.py`
 
 Run one directly:
 
 ```powershell
 python examples/openai_tool_loop.py
 python examples/tool_call_gate_demo.py
+python examples/mcp_tool_output_gate_demo.py
 ```
+
+### MCP Tool Output Proof
+
+MCP and other tool outputs are untrusted data. `examples/mcp_tool_output_gate_demo.py` shows the intended runtime boundary: benign MCP search output can continue to a read-only lookup, but hostile MCP output that tries to bypass approval and create a public GitHub issue is blocked before execution.
+
+```powershell
+python examples/mcp_tool_output_gate_demo.py
+```
+
+Expected signal:
+
+```text
+read-only MCP follow-up: ALLOWED
+public GitHub write: BLOCKED
+```
+
+See `docs/mcp_tool_output_proof.md` and `datasets/mcp_tool_output_injection.jsonl` for the proof writeup and fixture.
 
 ## What It Detects
 

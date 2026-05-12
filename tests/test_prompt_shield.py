@@ -633,6 +633,11 @@ class PromptShieldTests(unittest.TestCase):
         expected_fragments = {
             "generic_agent_wrapper.py": ("Blocked notes.search",),
             "langchain_style_wrapper.py": ("Blocked email.send",),
+            "mcp_tool_output_gate_demo.py": (
+                "read-only MCP follow-up: ALLOWED",
+                "public GitHub write: BLOCKED",
+                "verdict.blocked",
+            ),
             "openai_tool_loop.py": ("Austin: 72F",),
             "tool_call_gate_demo.py": (
                 "read-only lookup: ALLOWED",
