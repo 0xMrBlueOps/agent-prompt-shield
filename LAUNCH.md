@@ -45,6 +45,7 @@ Untrusted tool output can suggest a public action, but it should not authorize o
 Added:
 - examples/mcp_tool_output_gate_demo.py
 - datasets/mcp_tool_output_injection.jsonl
+- docs/demo_60_second.md
 - docs/mcp_tool_output_proof.md
 - docs/portfolio_public_action_gate.md
 - README proof section

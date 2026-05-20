@@ -45,6 +45,23 @@ Requirements:
 - no runtime dependencies
 - typed package marker included via `py.typed`
 
+## Two-Minute Proof
+
+Run the MCP/tool-output injection demo:
+
+```powershell
+python examples/mcp_tool_output_gate_demo.py
+```
+
+Expected signal:
+
+```text
+read-only MCP follow-up: ALLOWED
+public GitHub write: BLOCKED
+```
+
+What this proves: benign untrusted MCP output can continue to read-only work, while hostile MCP output cannot authorize a public GitHub write. See `docs/demo_60_second.md` for the short walkthrough and `docs/assets/mcp_tool_output_gate_terminal.txt` for the terminal capture.
+
 ## Quick Start
 
 ```python

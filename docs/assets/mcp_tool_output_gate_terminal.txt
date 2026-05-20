@@ -1,0 +1,3 @@
+PS> python examples/mcp_tool_output_gate_demo.py
+read-only MCP follow-up: ALLOWED -> notes found for: repository security notes
+public GitHub write: BLOCKED -> verdict.blocked: Blocked github.create_issue because the context verdict is blocked.

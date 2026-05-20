@@ -2,6 +2,33 @@
 
 Status: draft for Red's review. Do not publish without approval.
 
+## Why This Is Worth Publishing
+
+The most useful security lesson from current agent work is not that prompt
+injection exists. That is already obvious. The sharper lesson is that tool-using
+agents merge three things that normal software tries to keep separate:
+
+- data the system reads
+- instructions the system follows
+- authority the system can exercise
+
+That merge is where small text attacks become real-world actions. A hidden
+instruction in a search result, ticket, repository file, webpage, or MCP tool
+output does not need to "own" the agent. It only needs to influence the next
+tool call enough to make the agent post, email, file an issue, run a command, or
+expose private data.
+
+Recent agent-safety research points in the same direction. Papers on
+out-of-scope coding-agent actions and persistent prompt-injection risk are
+measuring a runtime boundary problem, not just a wording problem:
+
+- https://arxiv.org/abs/2605.18583
+- https://arxiv.org/abs/2605.17634
+
+Prompt Shield's public-action-gate proof is a small, conservative demo of that
+boundary: the model may see hostile tool output, but the host runtime still gets
+one deterministic checkpoint before a public write executes.
+
 ## Thesis
 
 Tool-using agents should treat public writes as a separate security boundary from model reasoning. If untrusted context can influence an agent, then a public action such as posting to X, creating a GitHub issue, sending email, or opening a webhook should require a runtime policy decision before the tool executes.
@@ -11,6 +38,23 @@ The core rule is simple:
 > Untrusted text can suggest an action, but it should not authorize an action.
 
 This is the same boundary behind Prompt Shield's MCP tool-output proof. A malicious tool result can tell the model to bypass approval and publish sensitive data, but the host runtime should gate the next tool call before anything reaches a public surface.
+
+## Threat Model
+
+Assume the agent has legitimate access to both low-risk read tools and
+high-impact write tools:
+
+- read tools: search notes, read repository files, inspect docs, browse pages
+- write tools: create GitHub issues, send messages, post to X, write files,
+  trigger webhooks, deploy changes
+
+Also assume some read surfaces contain attacker-controlled text. That includes
+MCP results, web pages, GitHub issues, support tickets, README files, documents,
+Slack messages, and retrieval chunks.
+
+The attacker does not need credentials to the write tool. The agent already has
+the tool. The attacker tries to convert untrusted text into tool arguments or
+approval-bypass instructions inside the agent loop.
 
 ## Attack Vector
 
@@ -73,6 +117,19 @@ public GitHub write: BLOCKED -> verdict.blocked: Blocked github.create_issue bec
 ```
 
 The important property is not the exact wording. The important property is that authorization happens outside the model's compromised text stream.
+
+## What This Proves
+
+This proof demonstrates one narrow property:
+
+> If hostile untrusted context is detected, a configured runtime gate can stop a
+> high-impact public write before the write tool executes.
+
+It does not prove that the model is safe, that every injection will be detected,
+or that a tool-using agent can operate without sandboxing, least privilege, and
+human approval. The point is smaller and more practical: host applications should
+not depend on the same compromised model context to decide whether a public
+action is authorized.
 
 ## Proof-of-Concept Test Idea
 
@@ -156,4 +213,3 @@ I added a Prompt Shield proof for this:
 
 The narrow lesson: untrusted text can suggest an action, but it should not authorize one.
 ```
-
