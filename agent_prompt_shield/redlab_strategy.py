@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
@@ -152,12 +155,18 @@ class OpenAIResponsesStrategist:
         self,
         *,
         model: str = "gpt-5.6",
-        transport: StrategyTransport,
+        api_key: str | None = None,
+        base_url: str = "https://api.openai.com/v1/responses",
+        timeout_seconds: float = 90.0,
+        transport: StrategyTransport | None = None,
     ) -> None:
         if not model.strip():
             raise ValueError("model is required")
         self.model = model
-        self.transport = transport
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        self.base_url = base_url
+        self.timeout_seconds = timeout_seconds
+        self.transport = transport or self._http_transport
 
     def build_request(self, packet: StrategyPacket) -> dict[str, Any]:
         packet.validate()
@@ -212,6 +221,27 @@ class OpenAIResponsesStrategist:
             if proposal.parent_attempt_id not in known_ids:
                 raise ValueError("proposal references an unknown parent attempt")
         return parsed["analysis"], proposals
+
+    def _http_transport(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not self.api_key:
+            raise RuntimeError("OPENAI_API_KEY is required for live strategy generation")
+        request = urllib.request.Request(
+            self.base_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"OpenAI Responses API returned HTTP {exc.code}: {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"OpenAI Responses API request failed: {exc.reason}") from exc
 
 
 def _parse_strategy_response(response: dict[str, Any]) -> dict[str, Any]:
