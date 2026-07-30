@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .redlab import Attempt, AttemptResult, Campaign, RedLabLedger
+from .redlab import Attempt, Campaign, RedLabLedger
 from .redlab_drafts import DraftStatus, DraftStore
 from .redlab_verify import VerificationStore
 
