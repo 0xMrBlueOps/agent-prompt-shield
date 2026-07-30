@@ -111,6 +111,37 @@ def test_strategist_rejects_unknown_parent() -> None:
         raise AssertionError("expected unknown-parent validation failure")
 
 
+def test_strategist_rejects_malformed_proposal_locally() -> None:
+    attempts = (make_attempt("attempt-root", AttemptResult.FAILED),)
+
+    def transport(_request):
+        return {
+            "output_text": (
+                '{"analysis":"test","proposals":[{"title":"x","action":"retry",'
+                '"attack_family":"instruction_confusion","hypothesis":"x",'
+                '"controlled_change":"x","proposed_payload":"x",'
+                '"expected_signal":"x","stop_condition":"x",'
+                '"action_tags":"submit-prompts",'
+                '"parent_attempt_id":"attempt-root"}]}'
+            )
+        }
+
+    strategist = OpenAIResponsesStrategist(model="test-model", transport=transport)
+
+    try:
+        strategist.propose(
+            StrategyPacket(
+                campaign=make_campaign(),
+                attempts=attempts,
+                focus_attempt_id="attempt-root",
+            )
+        )
+    except ValueError as exc:
+        assert "action_tags must be an array" in str(exc)
+    else:
+        raise AssertionError("expected malformed-proposal validation failure")
+
+
 def test_select_strategy_context_keeps_lineage_and_failed_sibling() -> None:
     attempts = [
         make_attempt("root", AttemptResult.FAILED),

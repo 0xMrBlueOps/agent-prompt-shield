@@ -27,6 +27,8 @@ agent-redlab record ...
 agent-redlab complete-attempt --attempt <ID> --result failed --response-file transcript.txt
 agent-redlab strategy --attempt <ID> --dry-run
 agent-redlab strategy --attempt <ID>
+agent-redlab strategy-tournament --attempt <ID> --dry-run
+agent-redlab strategy-tournament --attempt <ID> --seed-file promptfoo-results.json
 agent-redlab drafts --status pending
 agent-redlab accept-draft --draft <ID> --channel manual_challenge
 agent-redlab reject-draft --draft <ID> --reason "..."
@@ -62,6 +64,41 @@ This deterministic check runs before draft persistence and again before acceptan
 It is an explicit tag boundary, not a claim that arbitrary natural-language policy
 can be understood perfectly. Ambiguous executable proposals fail closed; `STOP`
 proposals have no executable tags.
+
+## Multi-lens strategy tournament
+
+`strategy-tournament` is the higher-depth strategy path for a failed or partial
+attempt. By default it:
+
+1. generates candidates through trust-boundary, task-fit, format-boundary, and
+   adversarial-critic lenses;
+2. validates every candidate against deterministic campaign action tags before it
+   reaches the critic;
+3. removes canonical payload repeats from earlier attempts, existing drafts, and
+   peer generation lanes while preserving format-only controlled variants;
+4. asks a separate structured critic to score evidence fit, scope fidelity,
+   novelty, testability, and information gain; and
+5. persists only the selected finalists as pending drafts.
+
+Use repeated `--lens` options to choose lanes. `--proposals-per-lens` and
+`--finalists` bound breadth. `--max-api-calls` fails closed when the planned
+generation-plus-critic call count exceeds the operator's limit.
+`--max-output-tokens` applies a per-call Responses API ceiling and the dry-run
+output reports the corresponding tournament-wide maximum. `--dry-run` performs
+no provider call and writes no drafts.
+
+JSON, JSONL, and text files supplied with repeated `--seed-file` options are
+bounded, deduplicated, and explicitly marked as untrusted research data. This
+allows local Pliny or Promptfoo exports to inform candidate generation without
+treating corpus text as operator instructions. Prior payloads are also sent as an
+exclusion list. Final output includes candidate fingerprints, critic scores,
+selection state, and parsed labeled fields when the payload uses a
+`Provider:`/`Model:`/`Description:` style format.
+
+The tournament is a disciplined experiment-selection system, not an autonomous
+target runner or a guarantee of challenge success. A human must review each draft,
+submit it only through the authorized challenge interface, and record the real
+response before evaluation and replay.
 
 ## Scope boundary
 

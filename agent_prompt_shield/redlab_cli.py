@@ -15,6 +15,16 @@ from .redlab_strategy import (
     StrategyProposal,
     select_strategy_context,
 )
+from .redlab_tournament import (
+    DEFAULT_LENSES,
+    CandidateScore,
+    StrategyLens,
+    StrategyTournament,
+    TournamentCandidate,
+    TournamentConfig,
+    load_seed_material,
+    parse_labeled_payload,
+)
 from .redlab_verify import (
     CriterionFinding,
     EvaluationVerdict,
@@ -90,9 +100,33 @@ def build_parser() -> argparse.ArgumentParser:
     strategy.add_argument("--model", default="gpt-5.6")
     strategy.add_argument("--max-proposals", type=int, default=3)
     strategy.add_argument("--max-history", type=int, default=12)
+    strategy.add_argument("--max-output-tokens", type=int, default=6_000)
     strategy.add_argument("--base-url", default="https://api.openai.com/v1/responses")
     strategy.add_argument("--timeout", type=float, default=90.0)
     strategy.add_argument("--dry-run", action="store_true")
+
+    tournament = subparsers.add_parser(
+        "strategy-tournament",
+        help="Generate, deduplicate, and independently rank multi-lens strategy proposals.",
+    )
+    tournament.add_argument("--attempt", required=True, help="Failed or partial focus attempt.")
+    tournament.add_argument("--model", default="gpt-5.6")
+    tournament.add_argument("--critic-model")
+    tournament.add_argument(
+        "--lens",
+        action="append",
+        choices=[item.value for item in StrategyLens],
+        help="Generation lens. Repeat for multiple lenses; defaults to four complementary lenses.",
+    )
+    tournament.add_argument("--proposals-per-lens", type=int, default=3)
+    tournament.add_argument("--finalists", type=int, default=3)
+    tournament.add_argument("--max-history", type=int, default=12)
+    tournament.add_argument("--max-api-calls", type=int, default=9)
+    tournament.add_argument("--max-output-tokens", type=int, default=6_000)
+    tournament.add_argument("--seed-file", action="append", type=Path, default=[])
+    tournament.add_argument("--base-url", default="https://api.openai.com/v1/responses")
+    tournament.add_argument("--timeout", type=float, default=90.0)
+    tournament.add_argument("--dry-run", action="store_true")
 
     drafts = subparsers.add_parser("drafts", help="List strategy drafts.")
     drafts.add_argument("--campaign")
@@ -294,11 +328,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         except ValueError as exc:
             parser.error(str(exc))
-        strategist = OpenAIResponsesStrategist(
-            model=args.model,
-            base_url=args.base_url,
-            timeout_seconds=args.timeout,
-        )
+        try:
+            strategist = OpenAIResponsesStrategist(
+                model=args.model,
+                base_url=args.base_url,
+                timeout_seconds=args.timeout,
+                max_output_tokens=args.max_output_tokens,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
         if args.dry_run:
             print(json.dumps(strategist.build_request(strategy_packet), indent=2))
             return 0
@@ -311,6 +349,140 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {"analysis": analysis, "drafts": [_draft_to_dict(item) for item in created]},
+                indent=2,
+            )
+        )
+        return 0
+
+    if args.command == "strategy-tournament":
+        focus = _find_attempt(ledger, args.attempt, parser)
+        if focus.result not in {AttemptResult.FAILED, AttemptResult.PARTIAL}:
+            parser.error("strategy tournament focus must be a failed or partial attempt")
+        strategy_campaign = _find_campaign(ledger, focus.campaign_id, parser)
+        try:
+            lenses = (
+                tuple(StrategyLens(value) for value in args.lens)
+                if args.lens
+                else DEFAULT_LENSES
+            )
+            config = TournamentConfig(
+                lenses=lenses,
+                proposals_per_lens=args.proposals_per_lens,
+                finalists=args.finalists,
+            )
+            config.validate()
+            if args.max_api_calls < 1:
+                raise ValueError("max_api_calls must be at least 1")
+            if config.planned_api_calls > args.max_api_calls:
+                raise ValueError(
+                    f"strategy tournament plans {config.planned_api_calls} API calls, "
+                    f"exceeding --max-api-calls {args.max_api_calls}"
+                )
+            context = select_strategy_context(
+                ledger.attempts(focus.campaign_id),
+                focus.attempt_id,
+                max_history=args.max_history,
+            )
+            strategy_packet = StrategyPacket(
+                campaign=strategy_campaign,
+                attempts=context,
+                focus_attempt_id=focus.attempt_id,
+                max_proposals=args.proposals_per_lens,
+            )
+            seed_material = load_seed_material(tuple(args.seed_file))
+            prior_payloads = _campaign_payloads(
+                ledger,
+                draft_store,
+                strategy_campaign.campaign_id,
+            )
+            strategist = OpenAIResponsesStrategist(
+                model=args.model,
+                base_url=args.base_url,
+                timeout_seconds=args.timeout,
+                max_output_tokens=args.max_output_tokens,
+            )
+            strategy_tournament = StrategyTournament(
+                strategist,
+                critic_model=args.critic_model,
+            )
+            generation_requests = strategy_tournament.build_generation_requests(
+                strategy_packet,
+                config,
+                seed_material=seed_material,
+                excluded_payloads=prior_payloads,
+            )
+        except (RuntimeError, ValueError) as exc:
+            parser.error(str(exc))
+        if args.dry_run:
+            print(
+                json.dumps(
+                    {
+                        "planned_api_calls": config.planned_api_calls,
+                        "max_planned_output_tokens": (
+                            config.planned_api_calls * strategist.max_output_tokens
+                        ),
+                        "generation_calls": len(config.lenses),
+                        "critic_calls": 1,
+                        "critic_model": strategy_tournament.critic_model,
+                        "seed_items": len(seed_material),
+                        "excluded_payloads": len(prior_payloads),
+                        "generation_requests": generation_requests,
+                    },
+                    indent=2,
+                )
+            )
+            return 0
+        try:
+            tournament_result = strategy_tournament.run(
+                strategy_packet,
+                config,
+                seed_material=seed_material,
+                excluded_payloads=prior_payloads,
+            )
+            created = draft_store.create_drafts(
+                campaign_id=strategy_campaign.campaign_id,
+                analysis=(
+                    f"{tournament_result.summary} "
+                    f"Critic analysis: {tournament_result.critic_analysis}"
+                ),
+                proposals=tuple(item.proposal for item in tournament_result.finalists),
+            )
+        except (RuntimeError, ValueError) as exc:
+            parser.error(str(exc))
+        score_by_id = {
+            item.candidate_id: item for item in tournament_result.rankings
+        }
+        rank_by_id = {
+            item.candidate_id: rank
+            for rank, item in enumerate(tournament_result.ranked_candidates, start=1)
+        }
+        draft_by_fingerprint = {
+            candidate.fingerprint: draft
+            for candidate, draft in zip(tournament_result.finalists, created, strict=True)
+        }
+        print(
+            json.dumps(
+                {
+                    "campaign_id": tournament_result.campaign_id,
+                    "focus_attempt_id": tournament_result.focus_attempt_id,
+                    "planned_api_calls": tournament_result.planned_api_calls,
+                    "generation_analyses": [
+                        {"lens": lens.value, "analysis": analysis}
+                        for lens, analysis in tournament_result.generation_analyses
+                    ],
+                    "critic_analysis": tournament_result.critic_analysis,
+                    "candidates": [
+                        _tournament_candidate_to_dict(
+                            item,
+                            score_by_id[item.candidate_id],
+                            rank=rank_by_id[item.candidate_id],
+                            selected=item.fingerprint in draft_by_fingerprint,
+                            draft=draft_by_fingerprint.get(item.fingerprint),
+                        )
+                        for item in tournament_result.candidates
+                    ],
+                    "drafts": [_draft_to_dict(item) for item in created],
+                },
                 indent=2,
             )
         )
@@ -532,7 +704,7 @@ def _evaluation_to_dict(item: IndependentEvaluation) -> dict[str, object]:
 
 
 def _proposal_to_dict(item: StrategyProposal) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "title": item.title,
         "action": item.action.value,
         "attack_family": item.attack_family,
@@ -543,6 +715,58 @@ def _proposal_to_dict(item: StrategyProposal) -> dict[str, object]:
         "stop_condition": item.stop_condition,
         "parent_attempt_id": item.parent_attempt_id,
         "action_tags": list(item.action_tags),
+    }
+    parsed_fields = parse_labeled_payload(item.proposed_payload)
+    if parsed_fields:
+        payload["payload_fields"] = parsed_fields
+    return payload
+
+
+def _campaign_payloads(
+    ledger: RedLabLedger,
+    draft_store: DraftStore,
+    campaign_id: str,
+) -> tuple[str, ...]:
+    payloads = [
+        item.payload
+        for item in ledger.attempts(campaign_id)
+        if item.payload.strip()
+    ]
+    payloads.extend(
+        item.proposal.proposed_payload
+        for item in draft_store.drafts(campaign_id=campaign_id)
+        if item.proposal.proposed_payload.strip()
+    )
+    return tuple(dict.fromkeys(payloads))[-64:]
+
+
+def _tournament_candidate_to_dict(
+    item: TournamentCandidate,
+    score: CandidateScore,
+    *,
+    rank: int,
+    selected: bool,
+    draft: StrategyDraft | None,
+) -> dict[str, object]:
+    score_payload = {
+        "evidence_fit": score.evidence_fit,
+        "scope_fidelity": score.scope_fidelity,
+        "novelty": score.novelty,
+        "testability": score.testability,
+        "information_gain": score.information_gain,
+        "weighted_score": score.weighted_score,
+        "rationale": score.rationale,
+        "risk": score.risk,
+    }
+    return {
+        "candidate_id": item.candidate_id,
+        "lens": item.lens.value,
+        "fingerprint": item.fingerprint,
+        "rank": rank,
+        "selected": selected,
+        "draft_id": draft.draft_id if draft else None,
+        "score": score_payload,
+        "proposal": _proposal_to_dict(item.proposal),
     }
 
 

@@ -64,6 +64,7 @@ def test_strategy_dry_run_builds_request_without_drafts(tmp_path, capsys):
     assert packet["campaign"]["campaign_id"] == campaign.campaign_id
     assert packet["focus_attempt_id"] == attempt.attempt_id
     assert packet["max_proposals"] == 2
+    assert payload["max_output_tokens"] == 6_000
     assert DraftStore(ledger_path).drafts() == []
 
 
@@ -155,6 +156,7 @@ def test_cli_help_lists_all_supported_workflows(capsys):
         "record",
         "complete-attempt",
         "strategy",
+        "strategy-tournament",
         "drafts",
         "accept-draft",
         "reject-draft",
