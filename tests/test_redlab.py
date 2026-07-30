@@ -49,6 +49,7 @@ def test_campaign_and_attempt_round_trip(tmp_path: Path) -> None:
         "successes": 0,
         "partials": 1,
         "failures": 0,
+        "pending": 0,
         "attack_success_rate": 0.0,
         "partial_or_better_rate": 1.0,
     }
