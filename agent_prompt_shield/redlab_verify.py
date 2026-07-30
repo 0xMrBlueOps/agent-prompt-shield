@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
-from .redlab import AttemptResult, RedLabLedger
+from .redlab import Attempt, AttemptResult, RedLabLedger
 
 
 class EvaluationVerdict(str, Enum):
@@ -172,7 +172,7 @@ class VerificationStore:
         )
         return evaluator_success and replay_success
 
-    def _find_attempt(self, attempt_id: str):
+    def _find_attempt(self, attempt_id: str) -> Attempt:
         for attempt in self.ledger.attempts():
             if attempt.attempt_id == attempt_id:
                 return attempt
