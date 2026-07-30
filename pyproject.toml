@@ -31,6 +31,7 @@ classifiers = [
 
 [project.scripts]
 agent-prompt-shield = "agent_prompt_shield.cli:main"
+agent-redlab = "agent_prompt_shield.redlab_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
