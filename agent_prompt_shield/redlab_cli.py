@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from .redlab import Attempt, AttemptResult, Campaign, RedLabLedger, Scope
+from .redlab_model import EvaluationPacket, OpenAIResponsesEvaluator
 from .redlab_verify import (
     CriterionFinding,
     EvaluationVerdict,
@@ -61,6 +62,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Repeat for each criterion. MET is true or false.",
     )
     evaluate.add_argument("--rationale", required=True)
+
+    evaluate_model = subparsers.add_parser(
+        "evaluate-model",
+        help="Evaluate one attempt with a strict-schema model and record the result.",
+    )
+    evaluate_model.add_argument("--attempt", required=True)
+    evaluate_model.add_argument("--model", default="gpt-5.6")
+    evaluate_model.add_argument("--evaluator")
+    evaluate_model.add_argument("--base-url", default="https://api.openai.com/v1/responses")
+    evaluate_model.add_argument("--timeout", type=float, default=90.0)
+    evaluate_model.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the model request without making an API call or writing an evaluation.",
+    )
 
     replay = subparsers.add_parser("verify-replay", help="Verify fresh replay attempts.")
     replay.add_argument("--campaign", required=True)
@@ -148,6 +164,23 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(_evaluation_to_dict(item), indent=2))
         return 0
 
+    if args.command == "evaluate-model":
+        attempt = _find_attempt(ledger, args.attempt, parser)
+        campaign = _find_campaign(ledger, attempt.campaign_id, parser)
+        evaluator = OpenAIResponsesEvaluator(
+            model=args.model,
+            base_url=args.base_url,
+            timeout_seconds=args.timeout,
+        )
+        packet = EvaluationPacket(campaign=campaign, attempt=attempt)
+        if args.dry_run:
+            print(json.dumps(evaluator.build_request(packet), indent=2))
+            return 0
+        item = evaluator.evaluate(packet, evaluator_identity=args.evaluator)
+        verification.record_evaluation(item)
+        print(json.dumps(_evaluation_to_dict(item), indent=2))
+        return 0
+
     if args.command == "verify-replay":
         result = verification.record_replay(
             ReplayVerification(
@@ -197,6 +230,28 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     parser.error(f"Unknown command: {args.command}")
+
+
+def _find_attempt(
+    ledger: RedLabLedger,
+    attempt_id: str,
+    parser: argparse.ArgumentParser,
+) -> Attempt:
+    for item in ledger.attempts():
+        if item.attempt_id == attempt_id:
+            return item
+    parser.error(f"Unknown attempt id: {attempt_id}")
+
+
+def _find_campaign(
+    ledger: RedLabLedger,
+    campaign_id: str,
+    parser: argparse.ArgumentParser,
+) -> Campaign:
+    for item in ledger.campaigns():
+        if item.campaign_id == campaign_id:
+            return item
+    parser.error(f"Unknown campaign id: {campaign_id}")
 
 
 def _parse_finding(raw: str, parser: argparse.ArgumentParser) -> CriterionFinding:
