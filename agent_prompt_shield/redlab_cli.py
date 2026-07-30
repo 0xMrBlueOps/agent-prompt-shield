@@ -6,7 +6,14 @@ import sys
 from pathlib import Path
 
 from .redlab import Attempt, AttemptResult, Campaign, RedLabLedger, Scope
+from .redlab_drafts import DraftStatus, DraftStore, StrategyDraft
 from .redlab_model import EvaluationPacket, OpenAIResponsesEvaluator
+from .redlab_strategy import (
+    OpenAIResponsesStrategist,
+    StrategyPacket,
+    StrategyProposal,
+    select_strategy_context,
+)
 from .redlab_verify import (
     CriterionFinding,
     EvaluationVerdict,
@@ -59,24 +66,41 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         required=True,
         metavar="MET|CRITERION|EVIDENCE",
-        help="Repeat for each criterion. MET is true or false.",
     )
     evaluate.add_argument("--rationale", required=True)
 
-    evaluate_model = subparsers.add_parser(
-        "evaluate-model",
-        help="Evaluate one attempt with a strict-schema model and record the result.",
-    )
+    evaluate_model = subparsers.add_parser("evaluate-model", help="Evaluate and record one attempt.")
     evaluate_model.add_argument("--attempt", required=True)
     evaluate_model.add_argument("--model", default="gpt-5.6")
     evaluate_model.add_argument("--evaluator")
     evaluate_model.add_argument("--base-url", default="https://api.openai.com/v1/responses")
     evaluate_model.add_argument("--timeout", type=float, default=90.0)
-    evaluate_model.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print the model request without making an API call or writing an evaluation.",
+    evaluate_model.add_argument("--dry-run", action="store_true")
+
+    strategy = subparsers.add_parser(
+        "strategy",
+        help="Generate controlled next-step proposals and save them as pending drafts.",
     )
+    strategy.add_argument("--attempt", required=True, help="Failed or partial focus attempt.")
+    strategy.add_argument("--model", default="gpt-5.6")
+    strategy.add_argument("--max-proposals", type=int, default=3)
+    strategy.add_argument("--max-history", type=int, default=12)
+    strategy.add_argument("--base-url", default="https://api.openai.com/v1/responses")
+    strategy.add_argument("--timeout", type=float, default=90.0)
+    strategy.add_argument("--dry-run", action="store_true")
+
+    drafts = subparsers.add_parser("drafts", help="List strategy drafts.")
+    drafts.add_argument("--campaign")
+    drafts.add_argument("--status", choices=[item.value for item in DraftStatus])
+    drafts.add_argument("--json", action="store_true")
+
+    accept = subparsers.add_parser("accept-draft", help="Accept a draft as an unexecuted child attempt.")
+    accept.add_argument("--draft", required=True)
+    accept.add_argument("--channel", required=True)
+
+    reject = subparsers.add_parser("reject-draft", help="Reject a pending strategy draft.")
+    reject.add_argument("--draft", required=True)
+    reject.add_argument("--reason", required=True)
 
     replay = subparsers.add_parser("verify-replay", help="Verify fresh replay attempts.")
     replay.add_argument("--campaign", required=True)
@@ -103,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     ledger = RedLabLedger(args.ledger)
     verification = VerificationStore(args.ledger)
+    draft_store = DraftStore(args.ledger)
 
     if args.command == "init":
         item = ledger.create_campaign(
@@ -181,6 +206,65 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(_evaluation_to_dict(item), indent=2))
         return 0
 
+    if args.command == "strategy":
+        focus = _find_attempt(ledger, args.attempt, parser)
+        if focus.result not in {AttemptResult.FAILED, AttemptResult.PARTIAL}:
+            parser.error("strategy focus must be a failed or partial attempt")
+        campaign = _find_campaign(ledger, focus.campaign_id, parser)
+        try:
+            context = select_strategy_context(
+                ledger.attempts(focus.campaign_id),
+                focus.attempt_id,
+                max_history=args.max_history,
+            )
+            packet = StrategyPacket(
+                campaign=campaign,
+                attempts=context,
+                focus_attempt_id=focus.attempt_id,
+                max_proposals=args.max_proposals,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        strategist = OpenAIResponsesStrategist(
+            model=args.model,
+            base_url=args.base_url,
+            timeout_seconds=args.timeout,
+        )
+        if args.dry_run:
+            print(json.dumps(strategist.build_request(packet), indent=2))
+            return 0
+        analysis, proposals = strategist.propose(packet)
+        created = draft_store.create_drafts(
+            campaign_id=campaign.campaign_id,
+            analysis=analysis,
+            proposals=proposals,
+        )
+        print(json.dumps({"analysis": analysis, "drafts": [_draft_to_dict(item) for item in created]}, indent=2))
+        return 0
+
+    if args.command == "drafts":
+        status_filter = DraftStatus(args.status) if args.status else None
+        items = draft_store.drafts(campaign_id=args.campaign, status=status_filter)
+        if args.json:
+            print(json.dumps([_draft_to_dict(item) for item in items], indent=2))
+        else:
+            for item in items:
+                print(
+                    f"{item.draft_id}\t{item.status.value}\t{item.proposal.action.value}"
+                    f"\t{item.proposal.title}\tparent={item.proposal.parent_attempt_id}"
+                )
+        return 0
+
+    if args.command == "accept-draft":
+        item = draft_store.accept(args.draft, delivery_channel=args.channel)
+        print(json.dumps(_attempt_to_dict(item), indent=2))
+        return 0
+
+    if args.command == "reject-draft":
+        item = draft_store.reject(args.draft, reason=args.reason)
+        print(json.dumps(_draft_to_dict(item), indent=2))
+        return 0
+
     if args.command == "verify-replay":
         result = verification.record_replay(
             ReplayVerification(
@@ -232,22 +316,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.error(f"Unknown command: {args.command}")
 
 
-def _find_attempt(
-    ledger: RedLabLedger,
-    attempt_id: str,
-    parser: argparse.ArgumentParser,
-) -> Attempt:
+def _find_attempt(ledger: RedLabLedger, attempt_id: str, parser: argparse.ArgumentParser) -> Attempt:
     for item in ledger.attempts():
         if item.attempt_id == attempt_id:
             return item
     parser.error(f"Unknown attempt id: {attempt_id}")
 
 
-def _find_campaign(
-    ledger: RedLabLedger,
-    campaign_id: str,
-    parser: argparse.ArgumentParser,
-) -> Campaign:
+def _find_campaign(ledger: RedLabLedger, campaign_id: str, parser: argparse.ArgumentParser) -> Campaign:
     for item in ledger.campaigns():
         if item.campaign_id == campaign_id:
             return item
@@ -331,6 +407,31 @@ def _evaluation_to_dict(item: IndependentEvaluation) -> dict[str, object]:
             for finding in item.findings
         ],
         "rationale": item.rationale,
+        "created_at": item.created_at,
+    }
+
+
+def _proposal_to_dict(item: StrategyProposal) -> dict[str, object]:
+    return {
+        "title": item.title,
+        "action": item.action.value,
+        "attack_family": item.attack_family,
+        "hypothesis": item.hypothesis,
+        "controlled_change": item.controlled_change,
+        "proposed_payload": item.proposed_payload,
+        "expected_signal": item.expected_signal,
+        "stop_condition": item.stop_condition,
+        "parent_attempt_id": item.parent_attempt_id,
+    }
+
+
+def _draft_to_dict(item: StrategyDraft) -> dict[str, object]:
+    return {
+        "draft_id": item.draft_id,
+        "campaign_id": item.campaign_id,
+        "status": item.status.value,
+        "analysis": item.analysis,
+        "proposal": _proposal_to_dict(item.proposal),
         "created_at": item.created_at,
     }
 
