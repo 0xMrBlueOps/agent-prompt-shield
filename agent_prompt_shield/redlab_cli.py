@@ -6,6 +6,13 @@ import sys
 from pathlib import Path
 
 from .redlab import Attempt, AttemptResult, Campaign, RedLabLedger, Scope
+from .redlab_verify import (
+    CriterionFinding,
+    EvaluationVerdict,
+    IndependentEvaluation,
+    ReplayVerification,
+    VerificationStore,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -13,11 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="agent-redlab",
         description="Evidence-driven CLI for authorized AI red-team campaigns.",
     )
-    parser.add_argument(
-        "--ledger",
-        default=".redlab/ledger.jsonl",
-        help="Append-only JSONL ledger path.",
-    )
+    parser.add_argument("--ledger", default=".redlab/ledger.jsonl")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init = subparsers.add_parser("init", help="Create an authorized campaign.")
@@ -30,35 +33,52 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--disclosure", action="append", default=[])
     init.add_argument("--success", action="append", required=True)
 
-    record = subparsers.add_parser("record", help="Record an experiment and target transcript.")
+    record = subparsers.add_parser("record", help="Record an experiment and transcript.")
     record.add_argument("--campaign", required=True)
     record.add_argument("--family", required=True)
     record.add_argument("--hypothesis", required=True)
-    record.add_argument("--payload", help="Exact test payload. Defaults to stdin when omitted.")
+    record.add_argument("--payload")
     record.add_argument("--payload-file", type=Path)
     record.add_argument("--channel", required=True)
     record.add_argument("--result", required=True, choices=[item.value for item in AttemptResult])
-    record.add_argument("--response", help="Target response/transcript text.")
+    record.add_argument("--response")
     record.add_argument("--response-file", type=Path)
     record.add_argument("--failure-reason", default="")
     record.add_argument("--lesson", default="")
     record.add_argument("--parent")
-    record.add_argument(
-        "--tool-trace-json",
-        default="[]",
-        help="JSON array containing the target's observed tool trace.",
+    record.add_argument("--tool-trace-json", default="[]")
+
+    evaluate = subparsers.add_parser("evaluate", help="Record an independent evaluation.")
+    evaluate.add_argument("--campaign", required=True)
+    evaluate.add_argument("--attempt", required=True)
+    evaluate.add_argument("--evaluator", required=True)
+    evaluate.add_argument("--verdict", required=True, choices=[item.value for item in EvaluationVerdict])
+    evaluate.add_argument(
+        "--finding",
+        action="append",
+        required=True,
+        metavar="MET|CRITERION|EVIDENCE",
+        help="Repeat for each criterion. MET is true or false.",
     )
+    evaluate.add_argument("--rationale", required=True)
+
+    replay = subparsers.add_parser("verify-replay", help="Verify fresh replay attempts.")
+    replay.add_argument("--campaign", required=True)
+    replay.add_argument("--source", required=True)
+    replay.add_argument("--replay", action="append", required=True)
+    replay.add_argument("--required-successes", type=int, default=1)
+    replay.add_argument("--verifier", required=True)
+
+    status = subparsers.add_parser("status", help="Show evaluation and confirmation status.")
+    status.add_argument("--attempt", required=True)
 
     campaigns = subparsers.add_parser("campaigns", help="List campaigns.")
     campaigns.add_argument("--json", action="store_true")
-
     attempts = subparsers.add_parser("attempts", help="List attempts for a campaign.")
     attempts.add_argument("--campaign", required=True)
     attempts.add_argument("--json", action="store_true")
-
     metrics = subparsers.add_parser("metrics", help="Show campaign metrics.")
     metrics.add_argument("--campaign", required=True)
-
     return parser
 
 
@@ -66,9 +86,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     ledger = RedLabLedger(args.ledger)
+    verification = VerificationStore(args.ledger)
 
     if args.command == "init":
-        campaign = ledger.create_campaign(
+        item = ledger.create_campaign(
             Campaign(
                 name=args.name,
                 scope=Scope(
@@ -82,32 +103,19 @@ def main(argv: list[str] | None = None) -> int:
                 success_criteria=tuple(args.success),
             )
         )
-        print(json.dumps(_campaign_to_dict(campaign), indent=2))
+        print(json.dumps(_campaign_to_dict(item), indent=2))
         return 0
 
     if args.command == "record":
-        payload = _read_text_argument(
-            inline=args.payload,
-            file_path=args.payload_file,
-            stdin_fallback=True,
-            parser=parser,
-            label="payload",
-        )
-        response = _read_text_argument(
-            inline=args.response,
-            file_path=args.response_file,
-            stdin_fallback=False,
-            parser=parser,
-            label="response",
-        )
+        payload = _read_text_argument(args.payload, args.payload_file, True, parser, "payload")
+        response = _read_text_argument(args.response, args.response_file, False, parser, "response")
         try:
             raw_trace = json.loads(args.tool_trace_json)
         except json.JSONDecodeError as exc:
             parser.error(f"--tool-trace-json must be valid JSON: {exc}")
         if not isinstance(raw_trace, list) or not all(isinstance(item, dict) for item in raw_trace):
             parser.error("--tool-trace-json must decode to an array of objects.")
-
-        attempt = ledger.record_attempt(
+        item = ledger.record_attempt(
             Attempt(
                 campaign_id=args.campaign,
                 attack_family=args.family,
@@ -122,8 +130,46 @@ def main(argv: list[str] | None = None) -> int:
                 parent_attempt_id=args.parent,
             )
         )
-        print(json.dumps(_attempt_to_dict(attempt), indent=2))
+        print(json.dumps(_attempt_to_dict(item), indent=2))
         return 0
+
+    if args.command == "evaluate":
+        findings = tuple(_parse_finding(raw, parser) for raw in args.finding)
+        item = verification.record_evaluation(
+            IndependentEvaluation(
+                campaign_id=args.campaign,
+                attempt_id=args.attempt,
+                evaluator=args.evaluator,
+                verdict=EvaluationVerdict(args.verdict),
+                findings=findings,
+                rationale=args.rationale,
+            )
+        )
+        print(json.dumps(_evaluation_to_dict(item), indent=2))
+        return 0
+
+    if args.command == "verify-replay":
+        result = verification.record_replay(
+            ReplayVerification(
+                campaign_id=args.campaign,
+                source_attempt_id=args.source,
+                replay_attempt_ids=tuple(args.replay),
+                required_successes=args.required_successes,
+                verifier=args.verifier,
+            )
+        )
+        print(json.dumps(result, indent=2))
+        return 0 if result["passed"] else 1
+
+    if args.command == "status":
+        payload = {
+            "attempt_id": args.attempt,
+            "confirmed_success": verification.confirmed_success(args.attempt),
+            "evaluations": [_evaluation_to_dict(item) for item in verification.evaluations(args.attempt)],
+            "replay_verifications": verification.replay_verifications(args.attempt),
+        }
+        print(json.dumps(payload, indent=2))
+        return 0 if payload["confirmed_success"] else 1
 
     if args.command == "campaigns":
         items = ledger.campaigns()
@@ -140,8 +186,10 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps([_attempt_to_dict(item) for item in items], indent=2))
         else:
             for item in items:
-                parent = item.parent_attempt_id or "root"
-                print(f"{item.attempt_id}\t{item.result.value}\t{item.attack_family}\tparent={parent}")
+                print(
+                    f"{item.attempt_id}\t{item.result.value}\t{item.attack_family}"
+                    f"\tparent={item.parent_attempt_id or 'root'}"
+                )
         return 0
 
     if args.command == "metrics":
@@ -151,8 +199,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.error(f"Unknown command: {args.command}")
 
 
+def _parse_finding(raw: str, parser: argparse.ArgumentParser) -> CriterionFinding:
+    parts = raw.split("|", 2)
+    if len(parts) != 3:
+        parser.error("--finding must use MET|CRITERION|EVIDENCE format.")
+    raw_met, criterion, evidence = parts
+    normalized = raw_met.strip().lower()
+    if normalized not in {"true", "false"}:
+        parser.error("--finding MET value must be true or false.")
+    return CriterionFinding(criterion=criterion, met=normalized == "true", evidence=evidence)
+
+
 def _read_text_argument(
-    *,
     inline: str | None,
     file_path: Path | None,
     stdin_fallback: bool,
@@ -173,36 +231,52 @@ def _read_text_argument(
     return ""
 
 
-def _campaign_to_dict(campaign: Campaign) -> dict[str, object]:
+def _campaign_to_dict(item: Campaign) -> dict[str, object]:
     return {
-        "campaign_id": campaign.campaign_id,
-        "name": campaign.name,
-        "target": campaign.scope.target,
-        "authorization": campaign.scope.authorization,
-        "allowed_actions": list(campaign.scope.allowed_actions),
-        "prohibited_actions": list(campaign.scope.prohibited_actions),
-        "disclosure_requirements": list(campaign.scope.disclosure_requirements),
-        "objective": campaign.objective,
-        "success_criteria": list(campaign.success_criteria),
-        "created_at": campaign.created_at,
+        "campaign_id": item.campaign_id,
+        "name": item.name,
+        "target": item.scope.target,
+        "authorization": item.scope.authorization,
+        "allowed_actions": list(item.scope.allowed_actions),
+        "prohibited_actions": list(item.scope.prohibited_actions),
+        "disclosure_requirements": list(item.scope.disclosure_requirements),
+        "objective": item.objective,
+        "success_criteria": list(item.success_criteria),
+        "created_at": item.created_at,
     }
 
 
-def _attempt_to_dict(attempt: Attempt) -> dict[str, object]:
+def _attempt_to_dict(item: Attempt) -> dict[str, object]:
     return {
-        "attempt_id": attempt.attempt_id,
-        "campaign_id": attempt.campaign_id,
-        "attack_family": attempt.attack_family,
-        "hypothesis": attempt.hypothesis,
-        "payload": attempt.payload,
-        "delivery_channel": attempt.delivery_channel,
-        "result": attempt.result.value,
-        "target_response": attempt.target_response,
-        "tool_trace": list(attempt.tool_trace),
-        "failure_reason": attempt.failure_reason,
-        "lesson": attempt.lesson,
-        "parent_attempt_id": attempt.parent_attempt_id,
-        "created_at": attempt.created_at,
+        "attempt_id": item.attempt_id,
+        "campaign_id": item.campaign_id,
+        "attack_family": item.attack_family,
+        "hypothesis": item.hypothesis,
+        "payload": item.payload,
+        "delivery_channel": item.delivery_channel,
+        "result": item.result.value,
+        "target_response": item.target_response,
+        "tool_trace": list(item.tool_trace),
+        "failure_reason": item.failure_reason,
+        "lesson": item.lesson,
+        "parent_attempt_id": item.parent_attempt_id,
+        "created_at": item.created_at,
+    }
+
+
+def _evaluation_to_dict(item: IndependentEvaluation) -> dict[str, object]:
+    return {
+        "evaluation_id": item.evaluation_id,
+        "campaign_id": item.campaign_id,
+        "attempt_id": item.attempt_id,
+        "evaluator": item.evaluator,
+        "verdict": item.verdict.value,
+        "findings": [
+            {"criterion": finding.criterion, "met": finding.met, "evidence": finding.evidence}
+            for finding in item.findings
+        ],
+        "rationale": item.rationale,
+        "created_at": item.created_at,
     }
 
 
