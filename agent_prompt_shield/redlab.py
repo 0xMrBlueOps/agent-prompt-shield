@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -42,9 +42,7 @@ class Campaign:
     objective: str
     success_criteria: tuple[str, ...]
     campaign_id: str = field(default_factory=lambda: f"campaign-{uuid4().hex[:12]}")
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def validate(self) -> None:
         self.scope.validate()
@@ -70,9 +68,7 @@ class Attempt:
     lesson: str = ""
     parent_attempt_id: str | None = None
     attempt_id: str = field(default_factory=lambda: f"attempt-{uuid4().hex[:12]}")
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def validate(self) -> None:
         required = {
@@ -110,6 +106,51 @@ class RedLabLedger:
         self._append({"record_type": "attempt", **self._attempt_dict(attempt)})
         return attempt
 
+    def complete_attempt(
+        self,
+        attempt_id: str,
+        *,
+        result: AttemptResult,
+        target_response: str,
+        tool_trace: tuple[dict[str, Any], ...] = (),
+        failure_reason: str = "",
+        lesson: str = "",
+    ) -> Attempt:
+        current = self.get_attempt(attempt_id)
+        if current.result != AttemptResult.INVALID:
+            raise ValueError(f"attempt is already completed with result {current.result.value}")
+        if result == AttemptResult.INVALID:
+            raise ValueError("completed attempts cannot remain invalid")
+        if not target_response.strip() and not tool_trace:
+            raise ValueError("completion requires a target response or tool trace")
+        completed = replace(
+            current,
+            result=result,
+            target_response=target_response,
+            tool_trace=tool_trace,
+            failure_reason=failure_reason,
+            lesson=lesson or current.lesson,
+        )
+        self._append(
+            {
+                "record_type": "attempt_update",
+                "attempt_id": attempt_id,
+                "result": result.value,
+                "target_response": target_response,
+                "tool_trace": list(tool_trace),
+                "failure_reason": failure_reason,
+                "lesson": completed.lesson,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        return completed
+
+    def get_attempt(self, attempt_id: str) -> Attempt:
+        for item in self.attempts():
+            if item.attempt_id == attempt_id:
+                return item
+        raise ValueError(f"unknown attempt_id: {attempt_id}")
+
     def campaigns(self) -> list[Campaign]:
         records: list[Campaign] = []
         for row in self._read_rows():
@@ -128,23 +169,19 @@ class RedLabLedger:
                         authorization=scope_data["authorization"],
                         allowed_actions=tuple(scope_data["allowed_actions"]),
                         prohibited_actions=tuple(scope_data.get("prohibited_actions", ())),
-                        disclosure_requirements=tuple(
-                            scope_data.get("disclosure_requirements", ())
-                        ),
+                        disclosure_requirements=tuple(scope_data.get("disclosure_requirements", ())),
                     ),
                 )
             )
         return records
 
     def attempts(self, campaign_id: str | None = None) -> list[Attempt]:
-        records: list[Attempt] = []
+        latest: dict[str, Attempt] = {}
+        order: list[str] = []
         for row in self._read_rows():
-            if row.get("record_type") != "attempt":
-                continue
-            if campaign_id is not None and row["campaign_id"] != campaign_id:
-                continue
-            records.append(
-                Attempt(
+            record_type = row.get("record_type")
+            if record_type == "attempt":
+                item = Attempt(
                     attempt_id=row["attempt_id"],
                     campaign_id=row["campaign_id"],
                     attack_family=row["attack_family"],
@@ -159,7 +196,24 @@ class RedLabLedger:
                     parent_attempt_id=row.get("parent_attempt_id"),
                     created_at=row["created_at"],
                 )
-            )
+                latest[item.attempt_id] = item
+                order.append(item.attempt_id)
+            elif record_type == "attempt_update":
+                attempt_id = row["attempt_id"]
+                current = latest.get(attempt_id)
+                if current is None:
+                    raise ValueError(f"attempt_update references unknown attempt: {attempt_id}")
+                latest[attempt_id] = replace(
+                    current,
+                    result=AttemptResult(row["result"]),
+                    target_response=row.get("target_response", ""),
+                    tool_trace=tuple(row.get("tool_trace", ())),
+                    failure_reason=row.get("failure_reason", ""),
+                    lesson=row.get("lesson", current.lesson),
+                )
+        records = [latest[item_id] for item_id in order]
+        if campaign_id is not None:
+            records = [item for item in records if item.campaign_id == campaign_id]
         return records
 
     def metrics(self, campaign_id: str) -> dict[str, float | int]:
@@ -172,6 +226,7 @@ class RedLabLedger:
             "successes": successes,
             "partials": partials,
             "failures": sum(a.result == AttemptResult.FAILED for a in attempts),
+            "pending": sum(a.result == AttemptResult.INVALID for a in self.attempts(campaign_id)),
             "attack_success_rate": successes / total if total else 0.0,
             "partial_or_better_rate": (successes + partials) / total if total else 0.0,
         }
