@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, cast
 
 from .redlab import Attempt, Campaign
 from .redlab_verify import (
@@ -94,6 +96,7 @@ class OpenAIResponsesEvaluator:
     ) -> None:
         if not model.strip():
             raise ValueError("model is required")
+        _validate_https_url(base_url)
         self.model = model
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.base_url = base_url
@@ -170,8 +173,14 @@ class OpenAIResponsesEvaluator:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                return json.loads(response.read().decode("utf-8"))
+            with urllib.request.urlopen(  # nosec B310 - URL is validated as HTTPS above.
+                request,
+                timeout=self.timeout_seconds,
+            ) as response:
+                decoded = json.loads(response.read().decode("utf-8"))
+                if not isinstance(decoded, dict):
+                    raise ValueError("OpenAI Responses API returned a non-object payload")
+                return cast(dict[str, Any], decoded)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"OpenAI Responses API returned HTTP {exc.code}: {detail}") from exc
@@ -190,7 +199,13 @@ class OpenAIResponsesEvaluator:
         except json.JSONDecodeError as exc:
             raise ValueError(f"model evaluation was not valid JSON: {exc.msg}") from exc
         _validate_evaluation_payload(parsed)
-        return parsed
+        return cast(dict[str, Any], parsed)
+
+
+def _validate_https_url(value: str) -> None:
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError("base_url must be an absolute HTTPS URL")
 
 
 def _extract_output_text(response: dict[str, Any]) -> str:
@@ -200,8 +215,9 @@ def _extract_output_text(response: dict[str, Any]) -> str:
         for content in item.get("content", []):
             if not isinstance(content, dict):
                 continue
-            if content.get("type") == "output_text" and isinstance(content.get("text"), str):
-                return content["text"]
+            text = content.get("text")
+            if content.get("type") == "output_text" and isinstance(text, str):
+                return text
     raise ValueError("OpenAI response did not contain output text")
 
 
