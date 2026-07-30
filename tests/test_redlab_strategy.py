@@ -59,6 +59,7 @@ def test_strategist_parses_controlled_proposal() -> None:
                 '"proposed_payload":"same content, moved later",'
                 '"expected_signal":"More direct task deviation",'
                 '"stop_condition":"Stop after two identical failures",'
+                '"action_tags":["submit-prompts"],'
                 '"parent_attempt_id":"attempt-child"}]}'
             )
         }
@@ -76,6 +77,7 @@ def test_strategist_parses_controlled_proposal() -> None:
     assert "partial result" in analysis
     assert len(proposals) == 1
     assert proposals[0].action == StrategyAction.MUTATE
+    assert proposals[0].action_tags == ("submit-prompts",)
     assert proposals[0].parent_attempt_id == "attempt-child"
 
 
@@ -89,6 +91,7 @@ def test_strategist_rejects_unknown_parent() -> None:
                 '"attack_family":"instruction_confusion","hypothesis":"x",'
                 '"controlled_change":"x","proposed_payload":"x",'
                 '"expected_signal":"x","stop_condition":"x",'
+                '"action_tags":["submit-prompts"],'
                 '"parent_attempt_id":"missing"}]}'
             )
         }

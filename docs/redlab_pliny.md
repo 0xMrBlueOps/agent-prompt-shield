@@ -6,7 +6,7 @@ The Promptfoo plugin dynamically fetches curated prompts from the L1B3RT4S repos
 
 ## Requirements
 
-- Node.js supported by the current Promptfoo release
+- Node.js supported by Promptfoo `0.121.19`
 - `npx` or a Promptfoo installation
 - provider credentials required by the selected target
 - an owned target, explicit challenge authorization, or written permission
@@ -48,13 +48,19 @@ agent-redlab-pliny run \
 The authorization flag is mandatory. The bridge invokes:
 
 ```bash
-npx promptfoo@latest redteam run \
+npx promptfoo@0.121.19 redteam run \
   --config promptfooconfig.pliny.yaml \
   --output promptfoo-pliny-results.json \
   --no-share
 ```
 
 `--no-share` prevents accidental publication of potentially sensitive prompts, outputs, or traces.
+
+The version is pinned by `PROMPTFOO_VERSION` in
+`agent_prompt_shield/redlab_pliny.py`, so behavior does not change without a code
+change. To update it, change that constant, review Promptfoo's release notes, update
+this document, and rerun the offline command-construction and import tests before
+considering an authorized live test.
 
 ## 3. Import into Red Lab
 
@@ -100,3 +106,7 @@ Each imported row records:
 ## Trust boundary
 
 Promptfoo and dynamically fetched L1B3RT4S content are external research inputs. Do not treat plugin text as trusted instructions for the Red Lab operator, evaluator, or tools. Only the declared campaign scope authorizes actions.
+
+Configuration generation, pinned command construction, authorization gating, and
+result import are tested offline with fixtures and mocks. This repository does not
+claim a live Promptfoo or paid-provider campaign was run.

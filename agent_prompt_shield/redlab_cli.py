@@ -8,6 +8,7 @@ from pathlib import Path
 from .redlab import Attempt, AttemptResult, Campaign, RedLabLedger, Scope
 from .redlab_drafts import DraftStatus, DraftStore, StrategyDraft
 from .redlab_model import EvaluationPacket, OpenAIResponsesEvaluator
+from .redlab_report import build_campaign_report
 from .redlab_strategy import (
     OpenAIResponsesStrategist,
     StrategyPacket,
@@ -60,7 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--campaign", required=True)
     evaluate.add_argument("--attempt", required=True)
     evaluate.add_argument("--evaluator", required=True)
-    evaluate.add_argument("--verdict", required=True, choices=[item.value for item in EvaluationVerdict])
+    evaluate.add_argument(
+        "--verdict", required=True, choices=[item.value for item in EvaluationVerdict]
+    )
     evaluate.add_argument(
         "--finding",
         action="append",
@@ -69,7 +72,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluate.add_argument("--rationale", required=True)
 
-    evaluate_model = subparsers.add_parser("evaluate-model", help="Evaluate and record one attempt.")
+    evaluate_model = subparsers.add_parser(
+        "evaluate-model", help="Evaluate and record one attempt."
+    )
     evaluate_model.add_argument("--attempt", required=True)
     evaluate_model.add_argument("--model", default="gpt-5.6")
     evaluate_model.add_argument("--evaluator")
@@ -94,7 +99,9 @@ def build_parser() -> argparse.ArgumentParser:
     drafts.add_argument("--status", choices=[item.value for item in DraftStatus])
     drafts.add_argument("--json", action="store_true")
 
-    accept = subparsers.add_parser("accept-draft", help="Accept a draft as an unexecuted child attempt.")
+    accept = subparsers.add_parser(
+        "accept-draft", help="Accept a draft as an unexecuted child attempt."
+    )
     accept.add_argument("--draft", required=True)
     accept.add_argument("--channel", required=True)
 
@@ -119,6 +126,30 @@ def build_parser() -> argparse.ArgumentParser:
     attempts.add_argument("--json", action="store_true")
     metrics = subparsers.add_parser("metrics", help="Show campaign metrics.")
     metrics.add_argument("--campaign", required=True)
+
+    complete = subparsers.add_parser(
+        "complete-attempt",
+        help="Complete a pending attempt with its final evidence.",
+    )
+    complete.add_argument("--attempt", required=True)
+    complete.add_argument(
+        "--result",
+        required=True,
+        choices=[
+            AttemptResult.FAILED.value,
+            AttemptResult.PARTIAL.value,
+            AttemptResult.SUCCESSFUL.value,
+        ],
+    )
+    complete.add_argument("--response")
+    complete.add_argument("--response-file", type=Path)
+    complete.add_argument("--tool-trace-json", default="[]")
+    complete.add_argument("--failure-reason", default="")
+    complete.add_argument("--lesson", default="")
+
+    report = subparsers.add_parser("report", help="Render a campaign Markdown report.")
+    report.add_argument("--campaign", required=True)
+    report.add_argument("--output", type=Path)
     return parser
 
 
@@ -130,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     draft_store = DraftStore(args.ledger)
 
     if args.command == "init":
-        item = ledger.create_campaign(
+        created_campaign = ledger.create_campaign(
             Campaign(
                 name=args.name,
                 scope=Scope(
@@ -144,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
                 success_criteria=tuple(args.success),
             )
         )
-        print(json.dumps(_campaign_to_dict(item), indent=2))
+        print(json.dumps(_campaign_to_dict(created_campaign), indent=2))
         return 0
 
     if args.command == "record":
@@ -156,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--tool-trace-json must be valid JSON: {exc}")
         if not isinstance(raw_trace, list) or not all(isinstance(item, dict) for item in raw_trace):
             parser.error("--tool-trace-json must decode to an array of objects.")
-        item = ledger.record_attempt(
+        recorded_attempt = ledger.record_attempt(
             Attempt(
                 campaign_id=args.campaign,
                 attack_family=args.family,
@@ -171,12 +202,40 @@ def main(argv: list[str] | None = None) -> int:
                 parent_attempt_id=args.parent,
             )
         )
-        print(json.dumps(_attempt_to_dict(item), indent=2))
+        print(json.dumps(_attempt_to_dict(recorded_attempt), indent=2))
+        return 0
+
+    if args.command == "complete-attempt":
+        response = _read_text_argument(
+            args.response,
+            args.response_file,
+            True,
+            parser,
+            "response",
+        )
+        try:
+            raw_trace = json.loads(args.tool_trace_json)
+        except json.JSONDecodeError as exc:
+            parser.error(f"--tool-trace-json must be valid JSON: {exc}")
+        if not isinstance(raw_trace, list) or not all(isinstance(item, dict) for item in raw_trace):
+            parser.error("--tool-trace-json must decode to an array of objects.")
+        try:
+            completed_attempt = ledger.complete_attempt(
+                args.attempt,
+                result=AttemptResult(args.result),
+                target_response=response,
+                tool_trace=tuple(raw_trace),
+                failure_reason=args.failure_reason,
+                lesson=args.lesson,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+        print(json.dumps(_attempt_to_dict(completed_attempt), indent=2))
         return 0
 
     if args.command == "evaluate":
         findings = tuple(_parse_finding(raw, parser) for raw in args.finding)
-        item = verification.record_evaluation(
+        recorded_evaluation = verification.record_evaluation(
             IndependentEvaluation(
                 campaign_id=args.campaign,
                 attempt_id=args.attempt,
@@ -186,39 +245,49 @@ def main(argv: list[str] | None = None) -> int:
                 rationale=args.rationale,
             )
         )
-        print(json.dumps(_evaluation_to_dict(item), indent=2))
+        print(json.dumps(_evaluation_to_dict(recorded_evaluation), indent=2))
         return 0
 
     if args.command == "evaluate-model":
-        attempt = _find_attempt(ledger, args.attempt, parser)
-        campaign = _find_campaign(ledger, attempt.campaign_id, parser)
+        evaluated_attempt = _find_attempt(ledger, args.attempt, parser)
+        evaluation_campaign = _find_campaign(
+            ledger,
+            evaluated_attempt.campaign_id,
+            parser,
+        )
         evaluator = OpenAIResponsesEvaluator(
             model=args.model,
             base_url=args.base_url,
             timeout_seconds=args.timeout,
         )
-        packet = EvaluationPacket(campaign=campaign, attempt=attempt)
+        evaluation_packet = EvaluationPacket(
+            campaign=evaluation_campaign,
+            attempt=evaluated_attempt,
+        )
         if args.dry_run:
-            print(json.dumps(evaluator.build_request(packet), indent=2))
+            print(json.dumps(evaluator.build_request(evaluation_packet), indent=2))
             return 0
-        item = evaluator.evaluate(packet, evaluator_identity=args.evaluator)
-        verification.record_evaluation(item)
-        print(json.dumps(_evaluation_to_dict(item), indent=2))
+        model_evaluation = evaluator.evaluate(
+            evaluation_packet,
+            evaluator_identity=args.evaluator,
+        )
+        verification.record_evaluation(model_evaluation)
+        print(json.dumps(_evaluation_to_dict(model_evaluation), indent=2))
         return 0
 
     if args.command == "strategy":
         focus = _find_attempt(ledger, args.attempt, parser)
         if focus.result not in {AttemptResult.FAILED, AttemptResult.PARTIAL}:
             parser.error("strategy focus must be a failed or partial attempt")
-        campaign = _find_campaign(ledger, focus.campaign_id, parser)
+        strategy_campaign = _find_campaign(ledger, focus.campaign_id, parser)
         try:
             context = select_strategy_context(
                 ledger.attempts(focus.campaign_id),
                 focus.attempt_id,
                 max_history=args.max_history,
             )
-            packet = StrategyPacket(
-                campaign=campaign,
+            strategy_packet = StrategyPacket(
+                campaign=strategy_campaign,
                 attempts=context,
                 focus_attempt_id=focus.attempt_id,
                 max_proposals=args.max_proposals,
@@ -231,38 +300,55 @@ def main(argv: list[str] | None = None) -> int:
             timeout_seconds=args.timeout,
         )
         if args.dry_run:
-            print(json.dumps(strategist.build_request(packet), indent=2))
+            print(json.dumps(strategist.build_request(strategy_packet), indent=2))
             return 0
-        analysis, proposals = strategist.propose(packet)
+        analysis, proposals = strategist.propose(strategy_packet)
         created = draft_store.create_drafts(
-            campaign_id=campaign.campaign_id,
+            campaign_id=strategy_campaign.campaign_id,
             analysis=analysis,
             proposals=proposals,
         )
-        print(json.dumps({"analysis": analysis, "drafts": [_draft_to_dict(item) for item in created]}, indent=2))
+        print(
+            json.dumps(
+                {"analysis": analysis, "drafts": [_draft_to_dict(item) for item in created]},
+                indent=2,
+            )
+        )
         return 0
 
     if args.command == "drafts":
         status_filter = DraftStatus(args.status) if args.status else None
-        items = draft_store.drafts(campaign_id=args.campaign, status=status_filter)
+        draft_items = draft_store.drafts(
+            campaign_id=args.campaign,
+            status=status_filter,
+        )
         if args.json:
-            print(json.dumps([_draft_to_dict(item) for item in items], indent=2))
+            print(
+                json.dumps(
+                    [_draft_to_dict(draft) for draft in draft_items],
+                    indent=2,
+                )
+            )
         else:
-            for item in items:
+            for draft in draft_items:
                 print(
-                    f"{item.draft_id}\t{item.status.value}\t{item.proposal.action.value}"
-                    f"\t{item.proposal.title}\tparent={item.proposal.parent_attempt_id}"
+                    f"{draft.draft_id}\t{draft.status.value}\t"
+                    f"{draft.proposal.action.value}\t{draft.proposal.title}"
+                    f"\tparent={draft.proposal.parent_attempt_id}"
                 )
         return 0
 
     if args.command == "accept-draft":
-        item = draft_store.accept(args.draft, delivery_channel=args.channel)
-        print(json.dumps(_attempt_to_dict(item), indent=2))
+        accepted_attempt = draft_store.accept(
+            args.draft,
+            delivery_channel=args.channel,
+        )
+        print(json.dumps(_attempt_to_dict(accepted_attempt), indent=2))
         return 0
 
     if args.command == "reject-draft":
-        item = draft_store.reject(args.draft, reason=args.reason)
-        print(json.dumps(_draft_to_dict(item), indent=2))
+        rejected_draft = draft_store.reject(args.draft, reason=args.reason)
+        print(json.dumps(_draft_to_dict(rejected_draft), indent=2))
         return 0
 
     if args.command == "verify-replay":
@@ -279,33 +365,46 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result["passed"] else 1
 
     if args.command == "status":
-        payload = {
+        status_payload = {
             "attempt_id": args.attempt,
             "confirmed_success": verification.confirmed_success(args.attempt),
-            "evaluations": [_evaluation_to_dict(item) for item in verification.evaluations(args.attempt)],
+            "evaluations": [
+                _evaluation_to_dict(item) for item in verification.evaluations(args.attempt)
+            ],
             "replay_verifications": verification.replay_verifications(args.attempt),
         }
-        print(json.dumps(payload, indent=2))
-        return 0 if payload["confirmed_success"] else 1
+        print(json.dumps(status_payload, indent=2))
+        return 0 if status_payload["confirmed_success"] else 1
 
     if args.command == "campaigns":
-        items = ledger.campaigns()
+        campaign_items = ledger.campaigns()
         if args.json:
-            print(json.dumps([_campaign_to_dict(item) for item in items], indent=2))
+            print(
+                json.dumps(
+                    [_campaign_to_dict(campaign) for campaign in campaign_items],
+                    indent=2,
+                )
+            )
         else:
-            for item in items:
-                print(f"{item.campaign_id}\t{item.name}\t{item.scope.target}")
+            for campaign in campaign_items:
+                print(f"{campaign.campaign_id}\t{campaign.name}\t{campaign.scope.target}")
         return 0
 
     if args.command == "attempts":
-        items = ledger.attempts(args.campaign)
+        attempt_items = ledger.attempts(args.campaign)
         if args.json:
-            print(json.dumps([_attempt_to_dict(item) for item in items], indent=2))
+            print(
+                json.dumps(
+                    [_attempt_to_dict(attempt) for attempt in attempt_items],
+                    indent=2,
+                )
+            )
         else:
-            for item in items:
+            for attempt in attempt_items:
                 print(
-                    f"{item.attempt_id}\t{item.result.value}\t{item.attack_family}"
-                    f"\tparent={item.parent_attempt_id or 'root'}"
+                    f"{attempt.attempt_id}\t{attempt.result.value}\t"
+                    f"{attempt.attack_family}"
+                    f"\tparent={attempt.parent_attempt_id or 'root'}"
                 )
         return 0
 
@@ -313,17 +412,38 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(ledger.metrics(args.campaign), indent=2))
         return 0
 
+    if args.command == "report":
+        try:
+            report = build_campaign_report(args.ledger, args.campaign)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if args.output is None:
+            print(report.markdown)
+        else:
+            path = report.write(args.output)
+            print(
+                json.dumps(
+                    {"campaign_id": args.campaign, "output": str(path)},
+                    indent=2,
+                )
+            )
+        return 0
+
     parser.error(f"Unknown command: {args.command}")
 
 
-def _find_attempt(ledger: RedLabLedger, attempt_id: str, parser: argparse.ArgumentParser) -> Attempt:
+def _find_attempt(
+    ledger: RedLabLedger, attempt_id: str, parser: argparse.ArgumentParser
+) -> Attempt:
     for item in ledger.attempts():
         if item.attempt_id == attempt_id:
             return item
     parser.error(f"Unknown attempt id: {attempt_id}")
 
 
-def _find_campaign(ledger: RedLabLedger, campaign_id: str, parser: argparse.ArgumentParser) -> Campaign:
+def _find_campaign(
+    ledger: RedLabLedger, campaign_id: str, parser: argparse.ArgumentParser
+) -> Campaign:
     for item in ledger.campaigns():
         if item.campaign_id == campaign_id:
             return item
@@ -422,6 +542,7 @@ def _proposal_to_dict(item: StrategyProposal) -> dict[str, object]:
         "expected_signal": item.expected_signal,
         "stop_condition": item.stop_condition,
         "parent_attempt_id": item.parent_attempt_id,
+        "action_tags": list(item.action_tags),
     }
 
 

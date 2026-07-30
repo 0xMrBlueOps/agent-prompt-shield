@@ -56,6 +56,13 @@ The strategist may propose controlled next experiments based on failed or partia
 
 The evaluator receives the exact campaign criteria, payload, transcript, and tool trace. It treats the claimed result as untrusted and returns strict structured findings. It does not generate new attacks.
 
+Executable strategy proposals also declare normalized `action_tags`. Each tag must
+exactly match a normalized allowed action and must not match a prohibited action.
+This deterministic check runs before draft persistence and again before acceptance.
+It is an explicit tag boundary, not a claim that arbitrary natural-language policy
+can be understood perfectly. Ambiguous executable proposals fail closed; `STOP`
+proposals have no executable tags.
+
 ## Scope boundary
 
 Every campaign must declare:
@@ -82,4 +89,9 @@ Red Lab v0.1 is functionally complete when it can:
 6. calculate campaign metrics; and
 7. produce a self-contained Markdown report.
 
-The branch implements all seven criteria. Live provider calls still require the operator's API credentials and an authorized test target.
+The branch implements all seven criteria. The ledger, CLI, structured-output
+parsing with mocked transports, scope checks, replay checks, report rendering, and
+Promptfoo result import are covered by offline tests. Live paid-provider execution,
+live Promptfoo campaigns, and Gray Swan platform automation have not been verified
+and are not claimed. Any live use still requires operator credentials and a target
+the operator owns or is explicitly authorized to test.

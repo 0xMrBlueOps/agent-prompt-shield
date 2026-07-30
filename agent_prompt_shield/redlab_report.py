@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
 from .redlab import Attempt, Campaign, RedLabLedger
 from .redlab_drafts import DraftStatus, DraftStore
-from .redlab_verify import VerificationStore
+from .redlab_verify import IndependentEvaluation, VerificationStore
 
 
 @dataclass(frozen=True)
@@ -31,27 +32,31 @@ def build_campaign_report(ledger_path: str | Path, campaign_id: str) -> Campaign
     pending_drafts = drafts.drafts(campaign_id=campaign_id, status=DraftStatus.PENDING)
 
     lines = [
-        f"# Red Lab Campaign Report: {campaign.name}",
+        f"# Red Lab Campaign Report: {_safe_inline(campaign.name)}",
         "",
         "## Scope and authorization",
         "",
-        f"- Campaign ID: `{campaign.campaign_id}`",
-        f"- Target: {campaign.scope.target}",
-        f"- Authorization: {campaign.scope.authorization}",
-        f"- Objective: {campaign.objective}",
-        f"- Created: {campaign.created_at}",
+        f"- Campaign ID: {_safe_inline(campaign.campaign_id)}",
+        f"- Created: {_safe_inline(campaign.created_at)}",
         "",
+        *_labeled_literal("Target", campaign.scope.target),
+        *_labeled_literal("Authorization", campaign.scope.authorization),
+        *_labeled_literal("Objective", campaign.objective),
         "### Allowed actions",
         "",
-        *[f"- {item}" for item in campaign.scope.allowed_actions],
+        *(_safe_list(campaign.scope.allowed_actions) or ["- None declared"]),
         "",
         "### Prohibited actions",
         "",
-        *([f"- {item}" for item in campaign.scope.prohibited_actions] or ["- None declared"]),
+        *(_safe_list(campaign.scope.prohibited_actions) or ["- None declared"]),
+        "",
+        "### Disclosure requirements",
+        "",
+        *(_safe_list(campaign.scope.disclosure_requirements) or ["- None declared"]),
         "",
         "### Success criteria",
         "",
-        *[f"- {item}" for item in campaign.success_criteria],
+        *_safe_list(campaign.success_criteria),
         "",
         "## Metrics",
         "",
@@ -73,7 +78,13 @@ def build_campaign_report(ledger_path: str | Path, campaign_id: str) -> Campaign
         lines.append("No attempts recorded.")
     else:
         for item in attempts:
-            lines.extend(_attempt_section(item, verification.confirmed_success(item.attempt_id)))
+            lines.extend(
+                _attempt_section(
+                    item,
+                    verification.confirmed_success(item.attempt_id),
+                    verification.evaluations(item.attempt_id),
+                )
+            )
 
     lines.extend(["", "## Confirmed findings", ""])
     if not confirmed:
@@ -82,12 +93,11 @@ def build_campaign_report(ledger_path: str | Path, campaign_id: str) -> Campaign
         for item in confirmed:
             lines.extend(
                 [
-                    f"### {item.attempt_id}",
+                    f"### Attempt: {_safe_inline(item.attempt_id)}",
                     "",
-                    f"- Family: {item.attack_family}",
-                    f"- Hypothesis: {item.hypothesis}",
-                    f"- Lesson: {item.lesson or 'Not recorded'}",
-                    "",
+                    *_labeled_literal("Attack family", item.attack_family),
+                    *_labeled_literal("Hypothesis", item.hypothesis),
+                    *_labeled_literal("Lesson", item.lesson or "Not recorded"),
                 ]
             )
 
@@ -96,45 +106,86 @@ def build_campaign_report(ledger_path: str | Path, campaign_id: str) -> Campaign
             "",
             "## Reproducibility statement",
             "",
-            "A finding is listed as confirmed only when an independent criterion-level evaluation "
-            "and a passing replay verification are both present in the append-only ledger.",
+            "A finding is listed as confirmed only when the source attempt is successful, "
+            "an exact criterion-complete independent evaluation is successful, and a passing "
+            "same-campaign replay verification is present in the append-only ledger.",
             "",
         ]
     )
     return CampaignReport(campaign=campaign, markdown="\n".join(lines))
 
 
-def _attempt_section(item: Attempt, confirmed: bool) -> list[str]:
+def _attempt_section(
+    item: Attempt,
+    confirmed: bool,
+    evaluations: list[IndependentEvaluation],
+) -> list[str]:
     status = item.result.value
     if confirmed:
         status += " (confirmed)"
-    response = item.target_response.strip() or "Not yet recorded"
-    failure = item.failure_reason.strip() or "Not recorded"
-    lesson = item.lesson.strip() or "Not recorded"
-    return [
-        f"### {item.attempt_id}",
+    trace = json.dumps(list(item.tool_trace), ensure_ascii=False, indent=2)
+    lines = [
+        f"### Attempt: {_safe_inline(item.attempt_id)}",
         "",
-        f"- Result: {status}",
-        f"- Parent: `{item.parent_attempt_id or 'root'}`",
-        f"- Attack family: {item.attack_family}",
-        f"- Delivery channel: {item.delivery_channel}",
-        f"- Hypothesis: {item.hypothesis}",
-        f"- Failure reason: {failure}",
-        f"- Lesson: {lesson}",
+        f"- Result: {_safe_inline(status)}",
+        f"- Parent: {_safe_inline(item.parent_attempt_id or 'root')}",
         "",
-        "**Payload**",
-        "",
-        "```text",
-        item.payload,
-        "```",
-        "",
-        "**Target response**",
-        "",
-        "```text",
-        response,
-        "```",
-        "",
+        *_labeled_literal("Attack family", item.attack_family),
+        *_labeled_literal("Delivery channel", item.delivery_channel),
+        *_labeled_literal("Hypothesis", item.hypothesis),
+        *_labeled_literal("Failure reason", item.failure_reason or "Not recorded"),
+        *_labeled_literal("Lesson", item.lesson or "Not recorded"),
+        *_labeled_literal("Payload", item.payload),
+        *_labeled_literal(
+            "Target response",
+            item.target_response.strip() or "Not yet recorded",
+        ),
+        *_labeled_literal("Tool trace", trace),
     ]
+    if not evaluations:
+        lines.extend(["**Independent evaluations**", "", "None recorded.", ""])
+    else:
+        lines.extend(["**Independent evaluations**", ""])
+        for evaluation in evaluations:
+            lines.extend(
+                [
+                    f"- {_safe_inline(evaluation.evaluation_id)}: "
+                    f"{_safe_inline(evaluation.verdict.value)} by "
+                    f"{_safe_inline(evaluation.evaluator)}",
+                    "",
+                ]
+            )
+            for finding in evaluation.findings:
+                lines.extend(
+                    [
+                        f"  - Criterion ({'met' if finding.met else 'not met'}): "
+                        f"{_safe_inline(finding.criterion)}",
+                        "",
+                        *_labeled_literal("Evidence", finding.evidence),
+                    ]
+                )
+            lines.extend(_labeled_literal("Rationale", evaluation.rationale))
+    return lines
+
+
+def _labeled_literal(label: str, value: str) -> list[str]:
+    return [f"**{label}**", "", *_literal_block(value), ""]
+
+
+def _literal_block(value: str) -> list[str]:
+    lines = value.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return [f"    {line}" for line in lines]
+
+
+def _safe_list(values: tuple[str, ...]) -> list[str]:
+    return [f"- {_safe_inline(value)}" for value in values]
+
+
+def _safe_inline(value: str) -> str:
+    escaped = value
+    for char in ("\\", "`", "*", "_", "{", "}", "[", "]", "<", ">", "#", "|"):
+        escaped = escaped.replace(char, f"\\{char}")
+    return escaped.replace("\r", " ").replace("\n", " ")
 
 
 def _find_campaign(ledger: RedLabLedger, campaign_id: str) -> Campaign:

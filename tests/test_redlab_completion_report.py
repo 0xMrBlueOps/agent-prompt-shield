@@ -13,6 +13,12 @@ from agent_prompt_shield.redlab import (
 )
 from agent_prompt_shield.redlab_command import main
 from agent_prompt_shield.redlab_report import build_campaign_report
+from agent_prompt_shield.redlab_verify import (
+    CriterionFinding,
+    EvaluationVerdict,
+    IndependentEvaluation,
+    VerificationStore,
+)
 
 
 def _campaign() -> Campaign:
@@ -161,3 +167,57 @@ def test_command_completes_attempt_and_writes_report(tmp_path: Path) -> None:
     )
     assert output.exists()
     assert "Marker did not persist." in output.read_text(encoding="utf-8")
+
+
+def test_report_renders_untrusted_content_as_literal_data(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.jsonl"
+    ledger = RedLabLedger(path)
+    campaign = ledger.create_campaign(_campaign())
+    payload = (
+        "payload with ``` and ```` fences\n"
+        "## Forged section\n"
+        "<script>alert('x')</script>\n"
+        '{"nested": {"unicode": "snowman \u2603"}}'
+    )
+    attempt = ledger.record_attempt(
+        Attempt(
+            attempt_id="attempt-`tick`-##-heading",
+            campaign_id=campaign.campaign_id,
+            attack_family="test\n# Forged family",
+            hypothesis=payload,
+            payload=payload,
+            delivery_channel="local\n---",
+            result=AttemptResult.SUCCESSFUL,
+            target_response=payload,
+            tool_trace=({"nested": {"markdown": "## Forged trace", "ticks": "```"}},),
+            lesson=payload,
+        )
+    )
+    VerificationStore(path).record_evaluation(
+        IndependentEvaluation(
+            evaluation_id="evaluation-`tick`-##-heading",
+            campaign_id=campaign.campaign_id,
+            attempt_id=attempt.attempt_id,
+            evaluator="reviewer <admin>",
+            verdict=EvaluationVerdict.SUCCESSFUL,
+            findings=(
+                CriterionFinding(
+                    campaign.success_criteria[0],
+                    True,
+                    "evidence\n## Forged evidence\n<script>bad()</script>",
+                ),
+            ),
+            rationale="rationale\n# Forged rationale",
+        )
+    )
+
+    markdown = build_campaign_report(path, campaign.campaign_id).markdown
+
+    assert "\n## Forged section" not in markdown
+    assert "\n# Forged family" not in markdown
+    assert "\n<script>" not in markdown
+    assert "\n```" not in markdown
+    assert "### Attempt: attempt-\\`tick\\`-\\#\\#-heading" in markdown
+    assert "    ## Forged section" in markdown
+    assert "    <script>alert('x')</script>" in markdown
+    assert "snowman \u2603" in markdown

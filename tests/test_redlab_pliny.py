@@ -7,6 +7,7 @@ import pytest
 
 from agent_prompt_shield.redlab import AttemptResult, Campaign, RedLabLedger, Scope
 from agent_prompt_shield.redlab_pliny import (
+    PROMPTFOO_PACKAGE,
     import_promptfoo_results,
     run_promptfoo_pliny,
     write_promptfoo_pliny_config,
@@ -50,6 +51,32 @@ def test_run_requires_authorization_acknowledgement(tmp_path: Path) -> None:
             output=tmp_path / "results.json",
             acknowledge_authorization=False,
         )
+
+
+def test_run_uses_pinned_promptfoo_and_no_share(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("redteam: {}\n", encoding="utf-8")
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return __import__("subprocess").CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("agent_prompt_shield.redlab_pliny.subprocess.run", fake_run)
+    run_promptfoo_pliny(
+        config=config,
+        output=tmp_path / "results.json",
+        acknowledge_authorization=True,
+    )
+
+    assert captured["command"][:2] == ["npx", PROMPTFOO_PACKAGE]
+    assert "@latest" not in " ".join(captured["command"])
+    assert captured["command"][-1] == "--no-share"
+    assert captured["kwargs"]["check"] is True
 
 
 def test_imports_promptfoo_v3_outputs(tmp_path: Path) -> None:

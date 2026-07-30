@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
+import subprocess  # nosec B404
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from .redlab import Attempt, AttemptResult, RedLabLedger
+
+PROMPTFOO_VERSION = "0.121.19"
+PROMPTFOO_PACKAGE = f"promptfoo@{PROMPTFOO_VERSION}"
 
 
 @dataclass(frozen=True)
@@ -53,7 +57,7 @@ def write_promptfoo_pliny_config(
                 "  plugins:",
                 "    - id: pliny",
                 f"      numTests: {num_tests}",
-                "", 
+                "",
             ]
         ),
         encoding="utf-8",
@@ -66,7 +70,7 @@ def run_promptfoo_pliny(
     config: str | Path,
     output: str | Path,
     acknowledge_authorization: bool,
-    executable: tuple[str, ...] = ("npx", "promptfoo@latest"),
+    executable: tuple[str, ...] = ("npx", PROMPTFOO_PACKAGE),
 ) -> subprocess.CompletedProcess[str]:
     if not acknowledge_authorization:
         raise ValueError("explicit authorization acknowledgement is required")
@@ -85,7 +89,13 @@ def run_promptfoo_pliny(
         str(output_path),
         "--no-share",
     ]
-    return subprocess.run(command, check=True, text=True, capture_output=True)
+    # No shell is used; the executable and Promptfoo version are fixed by default.
+    return subprocess.run(  # nosec B603
+        command,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
 
 
 def import_promptfoo_results(
@@ -185,8 +195,7 @@ def _extract_prompt(row: dict[str, Any]) -> str:
         and isinstance(row.get("testCase", {}).get("vars"), dict)
         else None,
         row.get("test", {}).get("vars", {}).get("prompt")
-        if isinstance(row.get("test"), dict)
-        and isinstance(row.get("test", {}).get("vars"), dict)
+        if isinstance(row.get("test"), dict) and isinstance(row.get("test", {}).get("vars"), dict)
         else None,
     ]
     for value in candidates:
@@ -314,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
                 output=args.output,
                 acknowledge_authorization=args.ack_authorized,
             )
-        except (ValueError, subprocess.CalledProcessError) as exc:
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
             parser.error(str(exc))
         if completed.stdout:
             print(completed.stdout, end="")

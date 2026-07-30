@@ -4,11 +4,14 @@ import json
 import os
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, cast
 
 from .redlab import Attempt, AttemptResult, Campaign
+from .redlab_scope import normalize_action_tag
+from .redlab_url import validate_provider_url
 
 StrategyTransport = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -31,6 +34,7 @@ class StrategyProposal:
     expected_signal: str
     stop_condition: str
     parent_attempt_id: str
+    action_tags: tuple[str, ...] = ()
 
     def validate(self) -> None:
         required = {
@@ -47,6 +51,8 @@ class StrategyProposal:
             raise ValueError(f"strategy proposal missing fields: {', '.join(missing)}")
         if self.action != StrategyAction.STOP and not self.proposed_payload.strip():
             raise ValueError("non-stop proposals require a proposed payload")
+        if self.action == StrategyAction.STOP and self.proposed_payload.strip():
+            raise ValueError("STOP proposals must not include a proposed payload")
 
 
 @dataclass(frozen=True)
@@ -79,6 +85,12 @@ class StrategyPacket:
                 "authorization": self.campaign.scope.authorization,
                 "allowed_actions": list(self.campaign.scope.allowed_actions),
                 "prohibited_actions": list(self.campaign.scope.prohibited_actions),
+                "allowed_action_tags": [
+                    normalize_action_tag(item) for item in self.campaign.scope.allowed_actions
+                ],
+                "prohibited_action_tags": [
+                    normalize_action_tag(item) for item in self.campaign.scope.prohibited_actions
+                ],
                 "objective": self.campaign.objective,
                 "success_criteria": list(self.campaign.success_criteria),
             },
@@ -127,6 +139,7 @@ STRATEGY_SCHEMA: dict[str, Any] = {
                     "expected_signal",
                     "stop_condition",
                     "parent_attempt_id",
+                    "action_tags",
                 ],
                 "properties": {
                     "title": {"type": "string", "minLength": 1},
@@ -141,6 +154,10 @@ STRATEGY_SCHEMA: dict[str, Any] = {
                     "expected_signal": {"type": "string", "minLength": 1},
                     "stop_condition": {"type": "string", "minLength": 1},
                     "parent_attempt_id": {"type": "string", "minLength": 1},
+                    "action_tags": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                    },
                 },
             },
         },
@@ -162,6 +179,7 @@ class OpenAIResponsesStrategist:
     ) -> None:
         if not model.strip():
             raise ValueError("model is required")
+        validate_provider_url(base_url)
         self.model = model
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.base_url = base_url
@@ -210,6 +228,7 @@ class OpenAIResponsesStrategist:
                 expected_signal=item["expected_signal"],
                 stop_condition=item["stop_condition"],
                 parent_attempt_id=item["parent_attempt_id"],
+                action_tags=tuple(item["action_tags"]),
             )
             for item in parsed["proposals"]
         )
@@ -235,8 +254,15 @@ class OpenAIResponsesStrategist:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                return json.loads(response.read().decode("utf-8"))
+            # Shared validation runs before credentials and request construction.
+            with urllib.request.urlopen(  # nosec B310
+                request,
+                timeout=self.timeout_seconds,
+            ) as response:
+                return cast(
+                    dict[str, Any],
+                    json.loads(response.read().decode("utf-8")),
+                )
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"OpenAI Responses API returned HTTP {exc.code}: {detail}") from exc

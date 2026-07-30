@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 from uuid import uuid4
 
 
@@ -33,6 +34,10 @@ class Scope:
             raise ValueError("scope authorization is required")
         if not self.allowed_actions:
             raise ValueError("scope must declare at least one allowed action")
+        if any(not item.strip() for item in self.allowed_actions):
+            raise ValueError("scope allowed actions must be non-empty")
+        if any(not item.strip() for item in self.prohibited_actions):
+            raise ValueError("scope prohibited actions must be non-empty")
 
 
 @dataclass(frozen=True)
@@ -46,12 +51,18 @@ class Campaign:
 
     def validate(self) -> None:
         self.scope.validate()
+        if not self.campaign_id.strip():
+            raise ValueError("campaign_id is required")
         if not self.name.strip():
             raise ValueError("campaign name is required")
         if not self.objective.strip():
             raise ValueError("campaign objective is required")
         if not self.success_criteria:
             raise ValueError("campaign must define success criteria")
+        if any(not item.strip() for item in self.success_criteria):
+            raise ValueError("campaign success criteria must be non-empty")
+        if len(set(self.success_criteria)) != len(self.success_criteria):
+            raise ValueError("campaign success criteria must be unique")
 
 
 @dataclass(frozen=True)
@@ -71,6 +82,8 @@ class Attempt:
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def validate(self) -> None:
+        if not self.attempt_id.strip():
+            raise ValueError("attempt_id is required")
         required = {
             "campaign_id": self.campaign_id,
             "attack_family": self.attack_family,
@@ -91,11 +104,15 @@ class RedLabLedger:
 
     def create_campaign(self, campaign: Campaign) -> Campaign:
         campaign.validate()
+        if campaign.campaign_id in {item.campaign_id for item in self.campaigns()}:
+            raise ValueError(f"duplicate campaign_id: {campaign.campaign_id}")
         self._append({"record_type": "campaign", **asdict(campaign)})
         return campaign
 
     def record_attempt(self, attempt: Attempt) -> Attempt:
         attempt.validate()
+        if attempt.attempt_id in {item.attempt_id for item in self.attempts()}:
+            raise ValueError(f"duplicate attempt_id: {attempt.attempt_id}")
         campaign_ids = {campaign.campaign_id for campaign in self.campaigns()}
         if attempt.campaign_id not in campaign_ids:
             raise ValueError(f"unknown campaign_id: {attempt.campaign_id}")
@@ -153,31 +170,37 @@ class RedLabLedger:
 
     def campaigns(self) -> list[Campaign]:
         records: list[Campaign] = []
+        seen: set[str] = set()
         for row in self._read_rows():
             if row.get("record_type") != "campaign":
                 continue
+            campaign_id = row["campaign_id"]
+            if campaign_id in seen:
+                raise ValueError(f"duplicate campaign_id in ledger: {campaign_id}")
+            seen.add(campaign_id)
             scope_data = row["scope"]
-            records.append(
-                Campaign(
-                    campaign_id=row["campaign_id"],
-                    name=row["name"],
-                    objective=row["objective"],
-                    success_criteria=tuple(row["success_criteria"]),
-                    created_at=row["created_at"],
-                    scope=Scope(
-                        target=scope_data["target"],
-                        authorization=scope_data["authorization"],
-                        allowed_actions=tuple(scope_data["allowed_actions"]),
-                        prohibited_actions=tuple(scope_data.get("prohibited_actions", ())),
-                        disclosure_requirements=tuple(scope_data.get("disclosure_requirements", ())),
-                    ),
-                )
+            campaign = Campaign(
+                campaign_id=campaign_id,
+                name=row["name"],
+                objective=row["objective"],
+                success_criteria=tuple(row["success_criteria"]),
+                created_at=row["created_at"],
+                scope=Scope(
+                    target=scope_data["target"],
+                    authorization=scope_data["authorization"],
+                    allowed_actions=tuple(scope_data["allowed_actions"]),
+                    prohibited_actions=tuple(scope_data.get("prohibited_actions", ())),
+                    disclosure_requirements=tuple(scope_data.get("disclosure_requirements", ())),
+                ),
             )
+            campaign.validate()
+            records.append(campaign)
         return records
 
     def attempts(self, campaign_id: str | None = None) -> list[Attempt]:
         latest: dict[str, Attempt] = {}
         order: list[str] = []
+        updated: set[str] = set()
         for row in self._read_rows():
             record_type = row.get("record_type")
             if record_type == "attempt":
@@ -196,6 +219,9 @@ class RedLabLedger:
                     parent_attempt_id=row.get("parent_attempt_id"),
                     created_at=row["created_at"],
                 )
+                item.validate()
+                if item.attempt_id in latest:
+                    raise ValueError(f"duplicate attempt_id in ledger: {item.attempt_id}")
                 latest[item.attempt_id] = item
                 order.append(item.attempt_id)
             elif record_type == "attempt_update":
@@ -203,6 +229,9 @@ class RedLabLedger:
                 current = latest.get(attempt_id)
                 if current is None:
                     raise ValueError(f"attempt_update references unknown attempt: {attempt_id}")
+                if attempt_id in updated:
+                    raise ValueError(f"duplicate attempt_update in ledger: {attempt_id}")
+                updated.add(attempt_id)
                 latest[attempt_id] = replace(
                     current,
                     result=AttemptResult(row["result"]),

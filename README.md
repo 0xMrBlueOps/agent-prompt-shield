@@ -148,6 +148,20 @@ The module entry point works too:
 python -m agent_prompt_shield.cli scan --text "Ignore previous instructions"
 ```
 
+### Authorized Red Lab
+
+The optional `agent-redlab` workflow records scoped AI-security campaigns in an
+append-only JSONL ledger. It supports attempt completion, controlled strategy
+drafts with deterministic action tags, independent criterion-level evaluation,
+same-campaign replay verification, metrics, and injection-resistant Markdown
+reports. `agent-redlab-pliny` can generate a pinned Promptfoo Pliny configuration
+and import exported results.
+
+These workflows are tested locally with fixtures and mocked model transports.
+Paid-provider calls, live Promptfoo campaigns, Gray Swan platform automation, and
+external-target attacks are not part of the tested claims. See
+`docs/redlab-v0.1.md` and `docs/redlab_pliny.md`.
+
 ## Python API
 
 ### Scan Untrusted Text

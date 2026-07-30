@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 from uuid import uuid4
 
 from .redlab import Attempt, AttemptResult, RedLabLedger
+from .redlab_scope import validate_proposal_scope
 from .redlab_strategy import StrategyAction, StrategyProposal
 
 
@@ -28,6 +30,8 @@ class StrategyDraft:
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def validate(self) -> None:
+        if not self.draft_id.strip():
+            raise ValueError("draft_id is required")
         if not self.campaign_id.strip():
             raise ValueError("campaign_id is required")
         if not self.analysis.strip():
@@ -50,22 +54,29 @@ class DraftStore:
         analysis: str,
         proposals: tuple[StrategyProposal, ...],
     ) -> tuple[StrategyDraft, ...]:
-        campaign_ids = {item.campaign_id for item in self.ledger.campaigns()}
-        if campaign_id not in campaign_ids:
+        campaigns = {item.campaign_id: item for item in self.ledger.campaigns()}
+        campaign = campaigns.get(campaign_id)
+        if campaign is None:
             raise ValueError(f"unknown campaign_id: {campaign_id}")
         attempt_ids = {item.attempt_id for item in self.ledger.attempts(campaign_id)}
-        drafts: list[StrategyDraft] = []
-        for proposal in proposals:
-            if proposal.parent_attempt_id not in attempt_ids:
-                raise ValueError(
-                    f"proposal references unknown parent attempt: {proposal.parent_attempt_id}"
-                )
-            draft = StrategyDraft(
-                campaign_id=campaign_id,
-                analysis=analysis,
-                proposal=proposal,
-            )
+        existing_ids = {item.draft_id for item in self.drafts()}
+        drafts = [
+            StrategyDraft(campaign_id=campaign_id, analysis=analysis, proposal=proposal)
+            for proposal in proposals
+        ]
+        for draft in drafts:
             draft.validate()
+            validate_proposal_scope(campaign, draft.proposal)
+            if draft.proposal.parent_attempt_id not in attempt_ids:
+                raise ValueError(
+                    f"proposal references unknown parent attempt: "
+                    f"{draft.proposal.parent_attempt_id}"
+                )
+            if draft.draft_id in existing_ids:
+                raise ValueError(f"duplicate draft_id: {draft.draft_id}")
+            existing_ids.add(draft.draft_id)
+        for draft in drafts:
+            proposal = draft.proposal
             self._append(
                 {
                     "record_type": "strategy_draft",
@@ -77,7 +88,6 @@ class DraftStore:
                     },
                 }
             )
-            drafts.append(draft)
         return tuple(drafts)
 
     def drafts(
@@ -87,16 +97,22 @@ class DraftStore:
         status: DraftStatus | None = None,
     ) -> list[StrategyDraft]:
         latest: dict[str, StrategyDraft] = {}
+        status_updates: set[str] = set()
         for row in self._read_rows():
             record_type = row.get("record_type")
             if record_type == "strategy_draft":
                 draft = self._draft_from_row(row)
+                if draft.draft_id in latest:
+                    raise ValueError(f"duplicate draft_id in ledger: {draft.draft_id}")
                 latest[draft.draft_id] = draft
             elif record_type == "strategy_draft_status":
                 draft_id = row["draft_id"]
                 current = latest.get(draft_id)
                 if current is None:
-                    continue
+                    raise ValueError(f"strategy_draft_status references unknown draft: {draft_id}")
+                if draft_id in status_updates:
+                    raise ValueError(f"duplicate strategy_draft_status in ledger: {draft_id}")
+                status_updates.add(draft_id)
                 latest[draft_id] = StrategyDraft(
                     draft_id=current.draft_id,
                     campaign_id=current.campaign_id,
@@ -118,6 +134,13 @@ class DraftStore:
             raise ValueError("STOP proposals cannot be accepted as attempts")
         if not delivery_channel.strip():
             raise ValueError("delivery_channel is required")
+        campaign = next(
+            (item for item in self.ledger.campaigns() if item.campaign_id == draft.campaign_id),
+            None,
+        )
+        if campaign is None:
+            raise ValueError(f"unknown campaign_id: {draft.campaign_id}")
+        validate_proposal_scope(campaign, draft.proposal)
         attempt = self.ledger.record_attempt(
             Attempt(
                 campaign_id=draft.campaign_id,
@@ -143,7 +166,7 @@ class DraftStore:
         if not reason.strip():
             raise ValueError("rejection reason is required")
         self._record_status(draft_id, DraftStatus.REJECTED, reason=reason)
-        return StrategyDraft(
+        draft = StrategyDraft(
             draft_id=draft.draft_id,
             campaign_id=draft.campaign_id,
             analysis=draft.analysis,
@@ -151,6 +174,7 @@ class DraftStore:
             status=DraftStatus.REJECTED,
             created_at=draft.created_at,
         )
+        return draft
 
     def _find_pending(self, draft_id: str) -> StrategyDraft:
         for item in self.drafts():
@@ -199,7 +223,7 @@ class DraftStore:
     @staticmethod
     def _draft_from_row(row: dict[str, Any]) -> StrategyDraft:
         proposal = row["proposal"]
-        return StrategyDraft(
+        draft = StrategyDraft(
             draft_id=row["draft_id"],
             campaign_id=row["campaign_id"],
             analysis=row["analysis"],
@@ -213,7 +237,10 @@ class DraftStore:
                 expected_signal=proposal["expected_signal"],
                 stop_condition=proposal["stop_condition"],
                 parent_attempt_id=proposal["parent_attempt_id"],
+                action_tags=tuple(proposal.get("action_tags", ())),
             ),
             status=DraftStatus(row["status"]),
             created_at=row["created_at"],
         )
+        draft.validate()
+        return draft

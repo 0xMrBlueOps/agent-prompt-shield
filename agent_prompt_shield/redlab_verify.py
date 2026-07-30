@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 from uuid import uuid4
 
-from .redlab import Attempt, AttemptResult, RedLabLedger
+from .redlab import Attempt, AttemptResult, Campaign, RedLabLedger
 
 
 class EvaluationVerdict(str, Enum):
@@ -43,6 +44,8 @@ class IndependentEvaluation:
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def validate(self) -> None:
+        if not self.evaluation_id.strip():
+            raise ValueError("evaluation_id is required")
         if not self.campaign_id.strip():
             raise ValueError("campaign_id is required")
         if not self.attempt_id.strip():
@@ -68,6 +71,8 @@ class ReplayVerification:
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def validate(self) -> None:
+        if not self.verification_id.strip():
+            raise ValueError("verification_id is required")
         if not self.campaign_id.strip():
             raise ValueError("campaign_id is required")
         if not self.source_attempt_id.strip():
@@ -97,6 +102,10 @@ class VerificationStore:
         attempt = self._find_attempt(evaluation.attempt_id)
         if attempt.campaign_id != evaluation.campaign_id:
             raise ValueError("evaluation campaign does not match attempt campaign")
+        campaign = self._find_campaign(evaluation.campaign_id)
+        _validate_evaluation_criteria(evaluation, campaign.success_criteria)
+        if evaluation.evaluation_id in {item.evaluation_id for item in self.evaluations()}:
+            raise ValueError(f"duplicate evaluation_id: {evaluation.evaluation_id}")
         self._append(
             {
                 "record_type": "evaluation",
@@ -108,27 +117,40 @@ class VerificationStore:
 
     def evaluations(self, attempt_id: str | None = None) -> list[IndependentEvaluation]:
         records: list[IndependentEvaluation] = []
+        seen: set[str] = set()
         for row in self._read_rows():
             if row.get("record_type") != "evaluation":
                 continue
-            if attempt_id is not None and row["attempt_id"] != attempt_id:
-                continue
-            records.append(
-                IndependentEvaluation(
-                    evaluation_id=row["evaluation_id"],
-                    campaign_id=row["campaign_id"],
-                    attempt_id=row["attempt_id"],
-                    evaluator=row["evaluator"],
-                    verdict=EvaluationVerdict(row["verdict"]),
-                    findings=tuple(CriterionFinding(**item) for item in row["findings"]),
-                    rationale=row["rationale"],
-                    created_at=row["created_at"],
-                )
+            evaluation_id = row["evaluation_id"]
+            if evaluation_id in seen:
+                raise ValueError(f"duplicate evaluation_id in ledger: {evaluation_id}")
+            seen.add(evaluation_id)
+            item = IndependentEvaluation(
+                evaluation_id=evaluation_id,
+                campaign_id=row["campaign_id"],
+                attempt_id=row["attempt_id"],
+                evaluator=row["evaluator"],
+                verdict=EvaluationVerdict(row["verdict"]),
+                findings=tuple(CriterionFinding(**finding) for finding in row["findings"]),
+                rationale=row["rationale"],
+                created_at=row["created_at"],
             )
+            item.validate()
+            attempt = self._find_attempt(item.attempt_id)
+            if attempt.campaign_id != item.campaign_id:
+                raise ValueError("evaluation campaign does not match attempt campaign")
+            campaign = self._find_campaign(item.campaign_id)
+            _validate_evaluation_criteria(item, campaign.success_criteria)
+            if attempt_id is None or item.attempt_id == attempt_id:
+                records.append(item)
         return records
 
     def record_replay(self, verification: ReplayVerification) -> dict[str, Any]:
         verification.validate()
+        if verification.verification_id in {
+            item["verification_id"] for item in self.replay_verifications()
+        }:
+            raise ValueError(f"duplicate verification_id: {verification.verification_id}")
         source = self._find_attempt(verification.source_attempt_id)
         if source.campaign_id != verification.campaign_id:
             raise ValueError("source attempt belongs to a different campaign")
@@ -156,27 +178,77 @@ class VerificationStore:
 
     def replay_verifications(self, source_attempt_id: str | None = None) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
+        seen: set[str] = set()
         for row in self._read_rows():
             if row.get("record_type") != "replay_verification":
                 continue
-            if source_attempt_id is not None and row["source_attempt_id"] != source_attempt_id:
-                continue
-            records.append(row)
+            verification_id = row["verification_id"]
+            if verification_id in seen:
+                raise ValueError(f"duplicate verification_id in ledger: {verification_id}")
+            seen.add(verification_id)
+            self._validate_replay_record(row)
+            if source_attempt_id is None or row["source_attempt_id"] == source_attempt_id:
+                records.append(row)
         return records
 
     def confirmed_success(self, attempt_id: str) -> bool:
+        source = self._find_attempt(attempt_id)
+        if source.result != AttemptResult.SUCCESSFUL:
+            return False
+        campaign = self._find_campaign(source.campaign_id)
         evaluations = self.evaluations(attempt_id)
-        evaluator_success = any(item.verdict == EvaluationVerdict.SUCCESSFUL for item in evaluations)
+        evaluator_success = any(
+            item.campaign_id == campaign.campaign_id
+            and item.verdict == EvaluationVerdict.SUCCESSFUL
+            and all(finding.met and finding.evidence.strip() for finding in item.findings)
+            for item in evaluations
+        )
         replay_success = any(
             bool(item.get("passed")) for item in self.replay_verifications(attempt_id)
         )
         return evaluator_success and replay_success
 
     def _find_attempt(self, attempt_id: str) -> Attempt:
-        for attempt in self.ledger.attempts():
-            if attempt.attempt_id == attempt_id:
-                return attempt
-        raise ValueError(f"unknown attempt_id: {attempt_id}")
+        return self.ledger.get_attempt(attempt_id)
+
+    def _find_campaign(self, campaign_id: str) -> Campaign:
+        for campaign in self.ledger.campaigns():
+            if campaign.campaign_id == campaign_id:
+                return campaign
+        raise ValueError(f"unknown campaign_id: {campaign_id}")
+
+    def _validate_replay_record(self, row: dict[str, Any]) -> None:
+        verification = ReplayVerification(
+            campaign_id=row["campaign_id"],
+            source_attempt_id=row["source_attempt_id"],
+            replay_attempt_ids=tuple(row["replay_attempt_ids"]),
+            required_successes=row["required_successes"],
+            verifier=row["verifier"],
+            verification_id=row["verification_id"],
+            created_at=row["created_at"],
+        )
+        verification.validate()
+        source = self._find_attempt(verification.source_attempt_id)
+        if source.campaign_id != verification.campaign_id:
+            raise ValueError("source attempt belongs to a different campaign")
+        replay_attempts = [self._find_attempt(item) for item in verification.replay_attempt_ids]
+        for replay in replay_attempts:
+            if replay.campaign_id != verification.campaign_id:
+                raise ValueError("replay attempt belongs to a different campaign")
+            if replay.parent_attempt_id != verification.source_attempt_id:
+                raise ValueError(
+                    f"replay attempt {replay.attempt_id} must name the source attempt as parent"
+                )
+        successes = sum(item.result == AttemptResult.SUCCESSFUL for item in replay_attempts)
+        passed = successes >= verification.required_successes
+        if row.get("successes") != successes or row.get("replays") != len(replay_attempts):
+            raise ValueError(
+                f"replay verification summary does not match ledger: {verification.verification_id}"
+            )
+        if row.get("passed") is not passed:
+            raise ValueError(
+                f"replay verification outcome does not match ledger: {verification.verification_id}"
+            )
 
     def _append(self, row: dict[str, Any]) -> None:
         with self.path.open("a", encoding="utf-8") as handle:
@@ -197,3 +269,21 @@ class VerificationStore:
                         f"invalid JSONL at {self.path}:{line_number}: {exc.msg}"
                     ) from exc
         return rows
+
+
+def _validate_evaluation_criteria(
+    evaluation: IndependentEvaluation,
+    success_criteria: tuple[str, ...],
+) -> None:
+    finding_criteria = tuple(item.criterion for item in evaluation.findings)
+    if finding_criteria != success_criteria:
+        raise ValueError(
+            "evaluation findings must match campaign success criteria exactly and in order"
+        )
+    met = tuple(item.met for item in evaluation.findings)
+    if evaluation.verdict == EvaluationVerdict.SUCCESSFUL and not all(met):
+        raise ValueError("successful evaluation requires every criterion to be met")
+    if evaluation.verdict == EvaluationVerdict.FAILED and any(met):
+        raise ValueError("failed evaluation cannot contain met criteria")
+    if evaluation.verdict == EvaluationVerdict.PARTIAL and (not any(met) or all(met)):
+        raise ValueError("partial evaluation requires both met and unmet criteria")

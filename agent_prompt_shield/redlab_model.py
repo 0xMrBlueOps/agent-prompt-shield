@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
-import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
 from .redlab import Attempt, Campaign
+from .redlab_url import validate_provider_url
 from .redlab_verify import (
     CriterionFinding,
     EvaluationVerdict,
@@ -96,7 +96,7 @@ class OpenAIResponsesEvaluator:
     ) -> None:
         if not model.strip():
             raise ValueError("model is required")
-        _validate_https_url(base_url)
+        validate_provider_url(base_url)
         self.model = model
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.base_url = base_url
@@ -173,7 +173,8 @@ class OpenAIResponsesEvaluator:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(  # nosec B310 - URL is validated as HTTPS above.
+            # Shared validation guarantees an absolute HTTPS provider URL.
+            with urllib.request.urlopen(  # nosec B310
                 request,
                 timeout=self.timeout_seconds,
             ) as response:
@@ -200,12 +201,6 @@ class OpenAIResponsesEvaluator:
             raise ValueError(f"model evaluation was not valid JSON: {exc.msg}") from exc
         _validate_evaluation_payload(parsed)
         return cast(dict[str, Any], parsed)
-
-
-def _validate_https_url(value: str) -> None:
-    parsed = urllib.parse.urlparse(value)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ValueError("base_url must be an absolute HTTPS URL")
 
 
 def _extract_output_text(response: dict[str, Any]) -> str:

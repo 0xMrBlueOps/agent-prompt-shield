@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from agent_prompt_shield.redlab import Attempt, AttemptResult, Campaign, RedLabLedger, Scope
 from agent_prompt_shield.redlab_cli import main
 from agent_prompt_shield.redlab_drafts import DraftStore
@@ -80,6 +82,7 @@ def test_drafts_accept_and_reject_commands(tmp_path, capsys):
             expected_signal="target references the final instruction",
             stop_condition="stop after two identical failures",
             parent_attempt_id=attempt.attempt_id,
+            action_tags=("submit-test-prompts",),
         ),
         StrategyProposal(
             title="No useful scoped test remains",
@@ -139,3 +142,26 @@ def test_drafts_accept_and_reject_commands(tmp_path, capsys):
     statuses = {item.draft_id: item.status.value for item in store.drafts()}
     assert statuses[drafts[0].draft_id] == "accepted"
     assert statuses[drafts[1].draft_id] == "rejected"
+
+
+def test_cli_help_lists_all_supported_workflows(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["--help"])
+
+    assert exc.value.code == 0
+    output = capsys.readouterr().out
+    for command in (
+        "init",
+        "record",
+        "complete-attempt",
+        "strategy",
+        "drafts",
+        "accept-draft",
+        "reject-draft",
+        "evaluate-model",
+        "verify-replay",
+        "status",
+        "metrics",
+        "report",
+    ):
+        assert command in output
