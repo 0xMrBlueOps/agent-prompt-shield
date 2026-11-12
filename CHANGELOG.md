@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Hardened Red Lab confirmation so only successful source attempts with exact,
+  evidence-complete evaluations and valid same-campaign replay records can confirm.
+- Added deterministic strategy action tags, duplicate-ID and ledger-order checks,
+  shared HTTPS provider URL validation, and injection-resistant Markdown reports.
+- Unified the Red Lab CLI entry point, exposed completion and report commands,
+  pinned Promptfoo to `0.121.19`, and expanded offline security regressions.
+- Added a bounded multi-lens strategy tournament with prior-payload deduplication,
+  deterministic scope gates, an independent structured critic, seed-file
+  ingestion, candidate fingerprints, API-call caps, and auditable finalist drafts.
+
 ## v0.1.2 MCP Tool-Output Gate
 
 - Added an MCP-style tool-output injection proof showing that untrusted tool results can suggest public actions but should not authorize them.

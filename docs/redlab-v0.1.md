@@ -1,0 +1,134 @@
+# Jarvis Red Lab v0.1
+
+Jarvis Red Lab is an evidence-driven workflow for AI-security testing on systems the operator owns or is explicitly authorized to assess.
+
+## Completed v0.1 loop
+
+```text
+campaign scope
+→ record baseline attempt
+→ complete attempt with transcript and trace
+→ request controlled strategy proposals
+→ review pending drafts
+→ accept one proposal as a child attempt
+→ execute it manually or through an authorized runner
+→ complete the child attempt
+→ independently evaluate the evidence
+→ replay the apparent success
+→ confirm or reject the finding
+→ export a reproducible campaign report
+```
+
+## Core commands
+
+```bash
+agent-redlab init ...
+agent-redlab record ...
+agent-redlab complete-attempt --attempt <ID> --result failed --response-file transcript.txt
+agent-redlab strategy --attempt <ID> --dry-run
+agent-redlab strategy --attempt <ID>
+agent-redlab strategy-tournament --attempt <ID> --dry-run
+agent-redlab strategy-tournament --attempt <ID> --seed-file promptfoo-results.json
+agent-redlab drafts --status pending
+agent-redlab accept-draft --draft <ID> --channel manual_challenge
+agent-redlab reject-draft --draft <ID> --reason "..."
+agent-redlab evaluate-model --attempt <ID> --dry-run
+agent-redlab evaluate-model --attempt <ID>
+agent-redlab verify-replay ...
+agent-redlab status --attempt <ID>
+agent-redlab metrics --campaign <ID>
+agent-redlab report --campaign <ID> --output report.md
+```
+
+## Evidence rules
+
+- The JSONL ledger is append-only.
+- Accepted strategy drafts create `invalid` attempts until real evidence is recorded.
+- `complete-attempt` materializes the final result without creating a duplicate experiment.
+- A completed attempt cannot be overwritten.
+- A claimed success is not confirmed by the attacker or strategist.
+- Confirmation requires both an independent criterion-level evaluation and passing replay verification.
+- Reports distinguish raw successes from confirmed reproducible successes.
+
+## Model roles
+
+The strategist and evaluator are separate roles.
+
+The strategist may propose controlled next experiments based on failed or partial evidence. It must preserve campaign scope, parent lineage, expected signals, and stop conditions.
+
+The evaluator receives the exact campaign criteria, payload, transcript, and tool trace. It treats the claimed result as untrusted and returns strict structured findings. It does not generate new attacks.
+
+Executable strategy proposals also declare normalized `action_tags`. Each tag must
+exactly match a normalized allowed action and must not match a prohibited action.
+This deterministic check runs before draft persistence and again before acceptance.
+It is an explicit tag boundary, not a claim that arbitrary natural-language policy
+can be understood perfectly. Ambiguous executable proposals fail closed; `STOP`
+proposals have no executable tags.
+
+## Multi-lens strategy tournament
+
+`strategy-tournament` is the higher-depth strategy path for a failed or partial
+attempt. By default it:
+
+1. generates candidates through trust-boundary, task-fit, format-boundary, and
+   adversarial-critic lenses;
+2. validates every candidate against deterministic campaign action tags before it
+   reaches the critic;
+3. removes canonical payload repeats from earlier attempts, existing drafts, and
+   peer generation lanes while preserving format-only controlled variants;
+4. asks a separate structured critic to score evidence fit, scope fidelity,
+   novelty, testability, and information gain; and
+5. persists only the selected finalists as pending drafts.
+
+Use repeated `--lens` options to choose lanes. `--proposals-per-lens` and
+`--finalists` bound breadth. `--max-api-calls` fails closed when the planned
+generation-plus-critic call count exceeds the operator's limit.
+`--max-output-tokens` applies a per-call Responses API ceiling and the dry-run
+output reports the corresponding tournament-wide maximum. `--dry-run` performs
+no provider call and writes no drafts.
+
+JSON, JSONL, and text files supplied with repeated `--seed-file` options are
+bounded, deduplicated, and explicitly marked as untrusted research data. This
+allows local Pliny or Promptfoo exports to inform candidate generation without
+treating corpus text as operator instructions. Prior payloads are also sent as an
+exclusion list. Final output includes candidate fingerprints, critic scores,
+selection state, and parsed labeled fields when the payload uses a
+`Provider:`/`Model:`/`Description:` style format.
+
+The tournament is a disciplined experiment-selection system, not an autonomous
+target runner or a guarantee of challenge success. A human must review each draft,
+submit it only through the authorized challenge interface, and record the real
+response before evaluation and replay.
+
+## Scope boundary
+
+Every campaign must declare:
+
+- target
+- authorization basis
+- allowed actions
+- prohibited actions
+- objective
+- measurable success criteria
+- disclosure requirements when applicable
+
+Red Lab does not infer authorization and does not expand a campaign beyond the stored scope.
+
+## v0.1 acceptance criteria
+
+Red Lab v0.1 is functionally complete when it can:
+
+1. preserve a complete attempt lineage;
+2. keep proposals separate from executed evidence;
+3. complete accepted drafts without duplicate attempts;
+4. independently score apparent success;
+5. require replay before confirmation;
+6. calculate campaign metrics; and
+7. produce a self-contained Markdown report.
+
+The branch implements all seven criteria. The ledger, CLI, structured-output
+parsing with mocked transports, scope checks, replay checks, report rendering, and
+Promptfoo result import are covered by offline tests. Live paid-provider execution,
+live Promptfoo campaigns, and Gray Swan platform automation have not been verified
+and are not claimed. Any live use still requires operator credentials and a target
+the operator owns or is explicitly authorized to test.
